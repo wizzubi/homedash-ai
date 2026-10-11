@@ -697,7 +697,7 @@ async function answerLessonFromDb(
  * Serwerowa odpowiedź o odjazdach z bazy — przystanek z frazy, z konfigu
  * (`bus_stop`) albo pierwszy z listy.
  */
-async function answerBusFromDb(stopFragment: string | null): Promise<string | null> {
+async function answerBusFromDb(stopFragment: string | null, commandText: string): Promise<string | null> {
   try {
     await ensureSchema();
     const rows = await db.select().from(busSchedules);
@@ -706,13 +706,16 @@ async function answerBusFromDb(stopFragment: string | null): Promise<string | nu
     }
     const stops = [...new Set(rows.map((row) => row.stopName))];
     const needle = (stopFragment || "").toLocaleLowerCase("pl-PL");
+    const said = commandText.toLocaleLowerCase("pl-PL");
     const configRows = await db.select().from(systemConfig);
     const configured = (configRows.find((row) => row.key === "bus_stop")?.value || "").trim();
-    const stop =
-      stops.find((name) => name.toLocaleLowerCase("pl-PL") === needle) ??
-      stops.find((name) => needle.length >= 3 && name.toLocaleLowerCase("pl-PL").includes(needle)) ??
-      (configured && stops.includes(configured) ? configured : null) ??
-      stops[0];
+    const school = (configRows.find((row) => row.key === "bus_stop_school")?.value || "").trim();
+    const valid = (name: string) => (name && stops.includes(name) ? name : "");
+    const byName =
+      stops.find((name) => needle.length >= 1 && name.toLocaleLowerCase("pl-PL") === needle) ??
+      stops.find((name) => needle.length >= 3 && name.toLocaleLowerCase("pl-PL").includes(needle));
+    const byHint = /szko[lł]/.test(said) ? valid(school) : /domu|\bdom\b/.test(said) ? valid(configured) : "";
+    const stop = byName || byHint || valid(configured) || stops[0];
     if (!stop) return "Brak rozkładu jazdy.";
 
     const now = new Date();
@@ -820,7 +823,7 @@ export async function runLocalCommand(
       return null;
     }
     case "busQuery": {
-      const reply = await answerBusFromDb(intent.stop);
+      const reply = await answerBusFromDb(intent.stop, trimmed);
       if (reply) return { reply: `⚡ ${reply}`, mutated: false };
       return null;
     }

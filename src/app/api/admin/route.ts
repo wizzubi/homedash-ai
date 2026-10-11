@@ -301,7 +301,8 @@ export async function POST(request: Request) {
 
     if (action === "bus-stop-save") {
       const stopName = text(body.stopName, 80);
-      await setConfigValues({ bus_stop: stopName });
+      const slot = text(body.slot, 10) === "school" ? "school" : "home";
+      await setConfigValues(slot === "school" ? { bus_stop_school: stopName } : { bus_stop: stopName });
       return Response.json({ ok: true });
     }
 

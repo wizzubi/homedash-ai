@@ -898,14 +898,19 @@ export default function HomeDashboard() {
           const iso = isoWeekday(reference);
           const dayType = iso > 5 ? "WEEKEND" : "WEEKDAY";
           const stops = [...new Set(dashboard.bus.map((item) => item.stopName))];
-          const configured = (dashboard.config.bus_stop || "").trim();
+          const validStop = (name: string) => {
+            const value = name.trim();
+            return value && stops.includes(value) ? value : "";
+          };
+          const homeStop = validStop(dashboard.config.bus_stop || "");
+          const schoolStop = validStop(dashboard.config.bus_stop_school || "");
           const needle = (intent.stop || "").toLocaleLowerCase("pl-PL");
-          const stop =
-            stops.find((name) => name.toLocaleLowerCase("pl-PL") === needle) ??
-            stops.find((name) => needle && name.toLocaleLowerCase("pl-PL").includes(needle)) ??
-            (configured && stops.includes(configured) ? configured : null) ??
-            stops[0] ??
-            null;
+          const said = command.toLocaleLowerCase("pl-PL");
+          const byName =
+            stops.find((name) => needle.length >= 1 && name.toLocaleLowerCase("pl-PL") === needle) ??
+            stops.find((name) => needle.length >= 3 && name.toLocaleLowerCase("pl-PL").includes(needle));
+          const byHint = /szko[lł]/.test(said) ? schoolStop : /domu|\bdom\b/.test(said) ? homeStop : "";
+          const stop = byName || byHint || homeStop || stops[0] || null;
           if (!stop) {
             pushLocal("⚡ Brak rozkładu jazdy. Wczytaj plik CSV lub JSON w panelu administratora (zakładka Autobus).");
             return;
@@ -1197,16 +1202,45 @@ export default function HomeDashboard() {
     () => [...new Set(dashboard.bus.map((item) => item.stopName))].sort((a, b) => a.localeCompare(b, "pl-PL")),
     [dashboard.bus],
   );
-  const busStop = (dashboard.config.bus_stop || "").trim() && busStops.includes((dashboard.config.bus_stop || "").trim())
-    ? (dashboard.config.bus_stop || "").trim()
-    : (busStops[0] ?? "");
+  const validBusStop = (name: string): string => {
+    const value = name.trim();
+    return value && busStops.includes(value) ? value : "";
+  };
+  const busHomeStop = validBusStop(dashboard.config.bus_stop || "");
+  const busSchoolStop = validBusStop(dashboard.config.bus_stop_school || "");
+  const busPinned = useMemo(
+    () => [
+      ...(busHomeStop ? [{ key: "home" as const, label: "Dom", icon: "🏠", stop: busHomeStop }] : []),
+      ...(busSchoolStop && busSchoolStop !== busHomeStop
+        ? [{ key: "school" as const, label: "Szkoła", icon: "🏫", stop: busSchoolStop }]
+        : []),
+    ],
+    [busHomeStop, busSchoolStop],
+  );
+  const [busStopSel, setBusStopSel] = useState<string | null>(() => {
+    try {
+      if (typeof window === "undefined") return null;
+      return window.localStorage.getItem("homedash:bus-stop");
+    } catch {
+      return null;
+    }
+  });
+  useEffect(() => {
+    try {
+      if (busStopSel) window.localStorage.setItem("homedash:bus-stop", busStopSel);
+    } catch {
+      /* ignoruj */
+    }
+  }, [busStopSel]);
+  const activeBusStop =
+    (busStopSel && busStops.includes(busStopSel) ? busStopSel : "") || busHomeStop || busStops[0] || "";
   const busUpcoming = useMemo(() => {
-    if (!busStop) return [];
+    if (!activeBusStop) return [];
     const reference = now ?? new Date();
     const dayType = isoWeekday(reference) > 5 ? "WEEKEND" : "WEEKDAY";
     const nowMinutes = reference.getHours() * 60 + reference.getMinutes();
     return dashboard.bus
-      .filter((item) => item.stopName === busStop && item.dayType === dayType)
+      .filter((item) => item.stopName === activeBusStop && item.dayType === dayType)
       .map((item) => {
         const [hours, minutes] = item.departureTime.split(":").map(Number);
         return { item, inMinutes: hours * 60 + minutes - nowMinutes };
@@ -1214,7 +1248,7 @@ export default function HomeDashboard() {
       .filter((entry) => entry.inMinutes >= -2)
       .sort((a, b) => a.inMinutes - b.inMinutes)
       .slice(0, 4);
-  }, [dashboard.bus, busStop, now]);
+  }, [dashboard.bus, activeBusStop, now]);
 
   // Kafelki jako węzły (domknięcia nad stanem) — pozycję nadaje tileOrder.
   const tileNodes: Record<TileId, ReactNode> = {
@@ -1565,11 +1599,29 @@ export default function HomeDashboard() {
     bus: (
       <GlassCard delay={0.24} className="bus-card hd-glow-blue">
         <SectionHeading icon={Bus} label="Autobus · odjazdy" accent="text-sky-300" action={<Link href="/admin" className="rounded-lg p-1 text-slate-600 transition hover:bg-white/5 hover:text-slate-300" title="Zarządzaj rozkładem"><ArrowRight size={13} /></Link>} />
-        <div className="mb-2 flex shrink-0 items-center gap-1.5 text-[9px] text-slate-500"><MapPin size={11} className="text-sky-200/70" /><span className="truncate">{busStop || "Brak przystanku"}</span></div>
+        <div className="mb-2 flex shrink-0 items-center gap-1.5 text-[9px] text-slate-500"><MapPin size={11} className="text-sky-200/70" /><span className="truncate">{activeBusStop || "Brak przystanku"}</span></div>
+        {busPinned.length >= 2 && (
+          <div className="mb-2 flex shrink-0 gap-1.5">
+            {busPinned.map((pin) => {
+              const activePin = pin.stop === activeBusStop;
+              return (
+                <button
+                  key={pin.key}
+                  onClick={() => setBusStopSel(pin.stop)}
+                  aria-pressed={activePin}
+                  title={pin.stop}
+                  className={`hd-button flex flex-1 items-center justify-center gap-1.5 rounded-xl border px-2 py-1.5 text-[9px] font-semibold transition ${activePin ? "border-sky-300/25 bg-sky-300/10 text-sky-100" : "border-slate-800 bg-slate-950/20 text-slate-500 hover:text-slate-300"}`}
+                >
+                  <span aria-hidden>{pin.icon}</span>{pin.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
         <div className="hd-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5">
           {!dataReady ? (
             <p className="py-3 text-center text-[10px] text-slate-600">Sprawdzam odjazdy…</p>
-          ) : !busStop ? (
+          ) : !activeBusStop ? (
             <div className="grid h-full min-h-[58px] place-items-center rounded-xl border border-dashed border-slate-800/80 px-4 text-center text-[10px] text-slate-500">Wczytaj rozkład w panelu administratora.</div>
           ) : busUpcoming.length === 0 ? (
             <div className="grid h-full min-h-[58px] place-items-center rounded-xl border border-dashed border-slate-800/80 px-4 text-center text-[10px] text-slate-500">Dziś nie ma już odjazdów z tego przystanku.</div>

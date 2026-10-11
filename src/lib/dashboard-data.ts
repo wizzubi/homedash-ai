@@ -26,6 +26,7 @@ export const CONFIG_KEYS = [
   "garbage_alert_hour",
   "alert_tts",
   "bus_stop",
+  "bus_stop_school",
 ] as const;
 
 const SECRET_CONFIG_KEYS = new Set<string>(["admin_pin"]);
