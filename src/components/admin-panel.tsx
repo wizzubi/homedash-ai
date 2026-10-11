@@ -119,6 +119,7 @@ export default function AdminPanel() {
   const [newPin, setNewPin] = useState("");
   const [lessonFilter, setLessonFilter] = useState({ child: "Lena", day: "1" });
   const [lessonForm, setLessonForm] = useState<LessonForm>({ id: "", childName: "Lena", dayOfWeek: "1", startTime: "08:00", endTime: "08:45", subject: "", classroom: "" });
+  const [timetableImport, setTimetableImport] = useState({ childName: "", replace: true });
   const [wasteForm, setWasteForm] = useState<WasteForm>({ id: "", fraction: "BIO", pickupDate: "" });
   const [documentForm, setDocumentForm] = useState<DocumentForm>({ id: "", title: "", category: "DOKUMENT", expirationDate: "" });
   const [workForm, setWorkForm] = useState<WorkForm>({ id: "", date: localDateValue(new Date()), hours: "8", startTime: "", endTime: "", note: "" });
@@ -197,6 +198,35 @@ export default function AdminPanel() {
     event.preventDefault();
     await perform("lesson-save", { ...lessonForm, dayOfWeek: Number(lessonForm.dayOfWeek) }, lessonForm.id ? "Zmieniono lekcję." : "Dodano lekcję do planu.");
     setLessonForm((previous) => ({ ...previous, id: "", subject: "", classroom: "" }));
+  }
+
+  async function importTimetable(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > 500_000) { setError("Plik JSON może mieć maksymalnie 500 KB."); event.target.value = ""; return; }
+    const childName = timetableImport.childName.trim() || lessonFilter.child || "";
+    if (!childName) { setError("Podaj imię dziecka, do którego przypisać plan."); event.target.value = ""; return; }
+    setBusy("timetable-import");
+    setError("");
+    setNotice("");
+    try {
+      const content = await file.text();
+      const result = await adminRequest<{
+        imported: number; removed: number; replaced: boolean; childName: string;
+        meta?: { oddzial: string; szkola: string; obowiazuje_od: string };
+        warnings?: string[];
+      }>("timetable-import", { content, childName, replace: timetableImport.replace });
+      await reload();
+      const scope = result.meta?.oddzial || result.meta?.szkola
+        ? ` (${[result.meta.oddzial, result.meta.szkola].filter(Boolean).join(" · ")})`
+        : "";
+      const extra = result.replaced ? ` · zastąpiono ${result.removed} lekcji` : "";
+      const warnings = result.warnings?.length ? ` · uwagi: ${result.warnings.slice(0, 2).join("; ")}` : "";
+      setNotice(`Plan dla „${result.childName}”${scope}: dodano ${result.imported} lekcji${extra}${warnings}.`);
+      setLessonFilter((previous) => ({ ...previous, child: result.childName }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Nie udało się odczytać planu JSON.");
+    } finally { setBusy(""); event.target.value = ""; }
   }
 
   async function saveWaste(event: FormEvent<HTMLFormElement>) {
@@ -338,6 +368,7 @@ export default function AdminPanel() {
               <Field label="Sala / klasa (opcjonalnie)"><AdminInput value={lessonForm.classroom} maxLength={30} onChange={(event) => setLessonForm({ ...lessonForm, classroom: event.target.value })} placeholder="np. 12" /></Field>
               <AdminButton type="submit" disabled={!!busy}><Save size={13} />{busy === "lesson-save" ? "Zapisuję…" : lessonForm.id ? "Zapisz zmiany" : "Dodaj do planu"}</AdminButton>
             </form>
+            <div className="hd-card flex flex-wrap items-center gap-4 p-4 sm:p-5 xl:col-span-2"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-violet-200/10 bg-violet-200/[.06] text-violet-100"><CalendarDays size={17} /></span><div className="min-w-[220px] flex-1"><h2 className="text-[12px] font-semibold text-slate-200">Import planu z JSON</h2><p className="mt-1 text-[9px] leading-relaxed text-slate-600">Wczytaj plan oddziału (pola poniedzialek…piatek, godziny GG:MM-GG:MM, grupy jako listy). Null to okienko.</p><div className="mt-2.5 flex flex-wrap items-center gap-2"><AdminInput value={timetableImport.childName} onChange={(event) => setTimetableImport({ ...timetableImport, childName: event.target.value })} placeholder={`Dziecko (domyślnie: ${lessonFilter.child || "…"})`} maxLength={48} className="h-9 max-w-[170px]" /><label className="flex cursor-pointer items-center gap-1.5 text-[9px] text-slate-500"><input type="checkbox" checked={timetableImport.replace} onChange={(event) => setTimetableImport({ ...timetableImport, replace: event.target.checked })} className="h-3.5 w-3.5 accent-emerald-300" /> Zastąp obecny plan dziecka</label></div></div><label className="hd-button inline-flex min-h-9 cursor-pointer items-center gap-2 rounded-xl border border-violet-200/15 bg-violet-200/[.06] px-3 text-[10px] font-semibold text-violet-100 hover:bg-violet-200/10">{busy === "timetable-import" ? <LoaderCircle size={13} className="animate-spin" /> : <Upload size={13} />}{busy === "timetable-import" ? "Importuję…" : "Wybierz plik JSON"}<input type="file" accept=".json,application/json" disabled={!!busy} onChange={(event) => void importTimetable(event)} className="sr-only" /></label></div>
           </div>}
 
           {activeTab === "waste" && <div className="space-y-4">

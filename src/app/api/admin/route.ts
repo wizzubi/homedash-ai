@@ -13,6 +13,7 @@ import {
   setConfigValues,
 } from "@/lib/dashboard-data";
 import { FRACTION_KEYS, importGarbageCalendar } from "@/lib/ics";
+import { parseTimetableJson } from "@/lib/timetable-json";
 import { geocodeCity } from "@/lib/location";
 import { eq } from "drizzle-orm";
 
@@ -135,6 +136,35 @@ export async function POST(request: Request) {
       if (typeof body.id !== "string") return bad("Brak identyfikatora lekcji.");
       await db.delete(timetable).where(eq(timetable.id, body.id)).run();
       return Response.json({ ok: true });
+    }
+
+    if (action === "timetable-import") {
+      const content = text(body.content, 500_000);
+      const childName = text(body.childName, 48);
+      const replace = body.replace !== false;
+      if (!childName) return bad("Podaj imię dziecka, do którego przypisać plan.");
+      let parsed;
+      try {
+        parsed = parseTimetableJson(content, childName);
+      } catch (error) {
+        return bad(error instanceof Error ? error.message : "Nie udało się odczytać planu JSON.");
+      }
+      let removed = 0;
+      if (replace) {
+        const previous = await db.select({ id: timetable.id }).from(timetable).where(eq(timetable.childName, childName)).all();
+        removed = previous.length;
+        if (removed > 0) await db.delete(timetable).where(eq(timetable.childName, childName)).run();
+      }
+      await db.insert(timetable).values(parsed.lessons).run();
+      return Response.json({
+        ok: true,
+        imported: parsed.lessons.length,
+        removed,
+        replaced: replace,
+        childName,
+        meta: parsed.meta,
+        warnings: parsed.warnings,
+      });
     }
 
     if (action === "waste-save") {
