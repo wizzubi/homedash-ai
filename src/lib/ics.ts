@@ -2,18 +2,16 @@ import { db } from "@/db";
 import { ensureSchema } from "@/db/migrate";
 import { garbageSchedules } from "@/db/schema";
 import ical from "node-ical";
+import {
+  FRACTION_LABELS,
+  collectEventText,
+  detectFractions,
+  type FractionKey,
+} from "@/lib/waste-fractions";
 
-export const FRACTION_KEYS = ["MIXED", "GLASS", "PLASTIC_METAL", "BIO"] as const;
-export type FractionKey = (typeof FRACTION_KEYS)[number];
-
-export const FRACTION_LABELS: Record<FractionKey, string> = {
-  MIXED: "zmieszane",
-  GLASS: "szkło",
-  PLASTIC_METAL: "plastik i metal",
-  BIO: "bio",
-};
-
-type IcsDate = Date & { dateOnly?: boolean; tz?: string };
+// Re-eksport dla dotychczasowych importerów (`/api/admin`, `/api/setup`).
+export { FRACTION_KEYS, FRACTION_LABELS, collectEventText, normalizeFraction, detectFractions } from "@/lib/waste-fractions";
+export type { FractionKey } from "@/lib/waste-fractions";
 
 type CalendarEvent = {
   type?: string;
@@ -38,75 +36,23 @@ export function normalizeIcs(raw: string): string {
   return unfolded.endsWith("\n") ? unfolded : `${unfolded}\n`;
 }
 
-function asText(value: string | string[] | undefined | null): string {
-  if (Array.isArray(value)) return value.join(" ");
-  return typeof value === "string" ? value : "";
-}
-
-/**
- * Tekst brany pod uwagę przy rozpoznawaniu frakcji. Gminy bardzo często
- * umieszczają nazwę frakcji w DESCRIPTION lub CATEGORIES, a w SUMMARY piszą
- * np. „Wywóz worków” — dlatego skanujemy wszystkie pola.
- */
-export function collectEventText(event: CalendarEvent): string {
-  return [event.summary, event.description, asText(event.categories), event.location]
-    .filter(Boolean)
-    .join(" · ");
-}
-
-/**
- * Rozpoznaje frakcję odpadów po polsku (odmiany, kolory pojemników).
- * Kolejność ma znaczenie: najpierw materiały, potem kolory.
- */
-export function normalizeFraction(raw: string): FractionKey | null {
-  const value = raw.toLocaleLowerCase("pl-PL");
-  if (!value) return null;
-
-  const has = (pattern: RegExp) => pattern.test(value);
-
-  // Plastik / metal / opakowania (żółty pojemnik)
-  if (has(/plastik|tworzyw|metal|opakowani|\bpet\b|żółt|zolt|foli/)) return "PLASTIC_METAL";
-
-  // Bio / kompost / odpady zielone (brązowy pojemnik)
-  if (has(/\bbio\b|organik|kompost|tłuszcz|tluszcz|odpady zielone|zielone odpady|ga[łl]ęzie|galezie|trawa|li[śs]cie/)) {
-    return "BIO";
-  }
-
-  // Szkło (zielony pojemnik)
-  if (has(/szk[łl]|glass|s[łl]oik|butelk|szklan|zielon(k|e)? pojemnik|kolor zielon/)) return "GLASS";
-
-  // Odpady zmieszane (szary / czarny pojemnik)
-  if (has(/zmiesz|niesegreg|mixed|resztk|pozosta[łl]|pozostal|szar(e|y|y pojemnik)|czarn|kub(e|ek) stanowisk/)) {
-    return "MIXED";
-  }
-
-  // Trailing colour heuristics (gdy brak słów kluczowych)
-  if (has(/żółt|zolt/)) return "PLASTIC_METAL";
-  if (has(/zielon/)) return "GLASS";
-  if (has(/brąz|braz/)) return "BIO";
-  if (has(/szar|czarn/)) return "MIXED";
-
-  return null;
-}
-
 function atNoon(year: number, month: number, day: number) {
   return new Date(year, month, day, 12, 0, 0, 0);
 }
 
 /**
  * Zamienia datę zdarzenia na dzień kalendarzowy.
- * Zdarzenia całodniowe (`dateOnly`) mają północ w UTC — używamy wtedy
- * getterów UTC, inaczej w strefie innej niż UTC data przesuwa się o dzień.
+ * node-ical materializuje daty całodniowe (`VALUE=DATE`, flaga `dateOnly`)
+ * jako północ czasu LOKALNEGO serwera — dlatego dzień odczytujemy getterami
+ * lokalnymi. Gettery UTC przesuwałyby takie daty o dzień wstecz w strefach
+ * na wschód od Greenwich (np. Europe/Warsaw: 2026-10-23 00:00+02:00 to
+ * 2026-10-22T22:00Z).
  */
 function toDay(input: Date | string | undefined): Date | null {
   if (!input) return null;
   const date = input instanceof Date ? input : new Date(input);
   if (Number.isNaN(date.getTime())) return null;
-  const dateOnly = Boolean((date as IcsDate).dateOnly);
-  const year = dateOnly ? date.getUTCFullYear() : date.getFullYear();
-  const month = dateOnly ? date.getUTCMonth() : date.getMonth();
-  const day = dateOnly ? date.getUTCDate() : date.getDate();
-  return atNoon(year, month, day);
+  return atNoon(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
 function isoDayKey(date: Date) {
@@ -121,10 +67,15 @@ export type ImportResult = {
   unrecognised: number;
   cancelled: number;
   recognised: Array<{ summary: string; fraction: FractionKey; recurring: boolean }>;
+  /** Streszczenia zdarzeń bez żadnego koszyka (np. „Gabaryty”) — do wglądu, nie do bazy. */
+  unmatched: string[];
 };
 
 /**
  * Parsuje kalendarz gminny `.ics` i zapisuje rozpoznane terminy odbioru.
+ * Jedno wydarzenie może dać kilka wierszy (osobny na każdą frakcję z danego
+ * dnia — np. „Zmieszane + Plastik + Szkło” z 2026-01-03). Frakcje bez koszyka
+ * w HomeDash (Papier, Gabaryty, Choinki) są pomijane i raportowane w `unmatched`.
  * Istniejące wpisy nigdy nie są duplikowane.
  */
 export async function importGarbageCalendar(icsText: string): Promise<ImportResult> {
@@ -151,6 +102,7 @@ export async function importGarbageCalendar(icsText: string): Promise<ImportResu
 
   const candidates: Array<{ fraction: FractionKey; pickupDate: Date }> = [];
   const recognised: ImportResult["recognised"] = [];
+  const unmatched: string[] = [];
   let totalEvents = 0;
   let matchedEvents = 0;
   let unrecognised = 0;
@@ -164,15 +116,21 @@ export async function importGarbageCalendar(icsText: string): Promise<ImportResu
       continue;
     }
 
-    const fraction = normalizeFraction(collectEventText(event));
-    if (!fraction) {
+    // Wszystkie frakcje z danego dnia — nie tylko pierwsza (to gubiło „Zmieszane”
+    // w zdarzeniach łączonych typu „Zmieszane, Metale i tworzywa, Papier, Szkło”).
+    const fractions = detectFractions(collectEventText(event));
+    if (fractions.length === 0) {
       unrecognised += 1;
+      const summary = (event.summary || "").trim().slice(0, 90);
+      if (summary && unmatched.length < 12 && !unmatched.includes(summary)) unmatched.push(summary);
       continue;
     }
     matchedEvents += 1;
-    const summary = (event.summary || "").trim().slice(0, 90) || FRACTION_LABELS[fraction];
-    if (!recognised.some((item) => item.summary === summary && item.fraction === fraction)) {
-      recognised.push({ summary, fraction, recurring: Boolean(event.rrule) });
+    const summary = (event.summary || "").trim().slice(0, 90) || fractions.map((key) => FRACTION_LABELS[key]).join(" + ");
+    for (const fraction of fractions) {
+      if (!recognised.some((item) => item.summary === summary && item.fraction === fraction)) {
+        recognised.push({ summary, fraction, recurring: Boolean(event.rrule) });
+      }
     }
 
     let dates: Date[] = [];
@@ -196,7 +154,7 @@ export async function importGarbageCalendar(icsText: string): Promise<ImportResu
 
     for (const date of dates) {
       if (date.getTime() >= from.getTime() && date.getTime() <= until.getTime()) {
-        candidates.push({ fraction, pickupDate: date });
+        for (const fraction of fractions) candidates.push({ fraction, pickupDate: date });
       }
     }
     if (candidates.length >= 500) break;
@@ -225,6 +183,7 @@ export async function importGarbageCalendar(icsText: string): Promise<ImportResu
     unrecognised,
     cancelled,
     recognised: recognised.slice(0, 12),
+    unmatched,
   };
 }
 
@@ -239,22 +198,23 @@ export function previewGarbageCalendar(icsText: string) {
   }
   return ical.async.parseICS(normalized).then((parsed) => {
     const events = Object.values(parsed) as unknown as CalendarEvent[];
-    const vevents = events.filter((event) => event.type === "VEVENT");
-    const matched = vevents
-      .map((event) => {
-        const fraction = normalizeFraction(collectEventText(event));
-        return {
-          summary: (event.summary || "").trim().slice(0, 90),
-          fraction,
-          recurring: Boolean(event.rrule),
-          cancelled: event.status === "CANCELLED",
-        };
-      })
-      .filter((item) => item.fraction && !item.cancelled);
+    const vevents = events.filter((event) => event.type === "VEVENT" && event.status !== "CANCELLED");
+    const matched = vevents.flatMap((event) => {
+      const fractions = detectFractions(collectEventText(event));
+      return fractions.map((fraction) => ({
+        summary: (event.summary || "").trim().slice(0, 90),
+        fraction,
+        recurring: Boolean(event.rrule),
+        cancelled: false,
+      }));
+    });
+    const unmatchedEvents = vevents.filter(
+      (event) => detectFractions(collectEventText(event)).length === 0,
+    );
     return {
       totalEvents: vevents.length,
-      matchedEvents: matched.length,
-      unrecognised: vevents.length - matched.filter((item) => !item.cancelled).length,
+      matchedEvents: vevents.length - unmatchedEvents.length,
+      unrecognised: unmatchedEvents.length,
       recognised: matched.slice(0, 12),
     };
   });

@@ -226,9 +226,12 @@ export default function AdminPanel() {
     setNotice("");
     try {
       const content = await file.text();
-      const result = await adminRequest<{ imported: number; detected: number }>("ics-import", { content });
+      const result = await adminRequest<{ imported: number; detected: number; unmatched?: string[] }>("ics-import", { content });
       await reload();
-      setNotice(`Import zakończony: ${result.imported} nowych terminów${result.detected ? ` · rozpoznano ${result.detected} wydarzeń` : ""}.`);
+      const skipped = result.unmatched?.length
+        ? ` · pominięto ${result.unmatched.length} bez koszyka (${[...new Set(result.unmatched.map((item) => item.replace(/^Odbiór odpadów:\s*/, "")))].slice(0, 3).join(" · ")})`
+        : "";
+      setNotice(`Import zakończony: ${result.imported} nowych terminów${result.detected ? ` · rozpoznano ${result.detected} wydarzeń` : ""}${skipped}.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Nie udało się odczytać pliku ICS.");
     } finally { setBusy(""); event.target.value = ""; }
