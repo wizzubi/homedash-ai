@@ -309,6 +309,7 @@ export default function HomeDashboard() {
   const [dayOffset, setDayOffset] = useState(0);
   const [slideDir, setSlideDir] = useState(0);
   const touchX = useRef<number | null>(null);
+  const workTouchX = useRef<number | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantText, setAssistantText] = useState("");
@@ -744,7 +745,21 @@ export default function HomeDashboard() {
   const nextLesson = viewingToday
     ? viewedLessons.find((lesson) => minutesOfDay(lesson.startTime) > nowMinutes)
     : undefined;
-  const todayHours = dashboard.workLogs.reduce((sum, log) => sum + (dateKey(log.date) === dateKey(currentTime) ? log.hours : 0), 0);
+  // Karta godzin podąża za przeglądanym dniem (wspólny dayOffset z planem lekcji).
+  const viewedDayLogs = dashboard.workLogs.filter((log) => dateKey(log.date) === dateKey(viewedDate));
+  const viewedDayHours = viewedDayLogs.reduce((sum, log) => sum + log.hours, 0);
+  const workDayLabel = dayOffset === 0
+    ? "dzisiaj"
+    : dayOffset === 1
+      ? "jutro"
+      : dayOffset === -1
+        ? "wczoraj"
+        : viewedDate.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "numeric" });
+  const entriesLabel = viewedDayLogs.length === 1
+    ? "1 wpis"
+    : viewedDayLogs.length % 10 >= 2 && viewedDayLogs.length % 10 <= 4 && (viewedDayLogs.length % 100 < 12 || viewedDayLogs.length % 100 > 14)
+      ? `${viewedDayLogs.length} wpisy`
+      : `${viewedDayLogs.length} wpisów`;
   const weekStart = localMidnight(currentTime);
   weekStart.setDate(weekStart.getDate() - (isoWeekday(currentTime) - 1));
   const weekHours = dashboard.workLogs.reduce((sum, log) => {
@@ -988,15 +1003,22 @@ export default function HomeDashboard() {
             <div className="hd-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5">
               {!dataReady ? <div className="grid h-full place-items-center text-[11px] text-slate-600">Ładuję plan dnia…</div> : viewedLessons.length ? (
               <motion.div key={`${activeChild}-${dateKey(viewedDate)}`} initial={{ opacity: 0, x: slideDir === 0 ? 0 : 22 * slideDir }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.22, ease: "easeOut" }} className="space-y-1">
-                {viewedLessons.slice(0, 8).map((lesson) => {
+                {viewedLessons.slice(0, 8).map((lesson, index) => {
                 const active = lesson.id === currentLesson?.id;
                 const past = dayOffset < 0 || (dayOffset === 0 && minutesOfDay(lesson.endTime) <= nowMinutes);
                 return (
-                  <div key={lesson.id} className={`flex min-h-[37px] items-center gap-2.5 rounded-xl border px-2.5 py-1.5 transition ${active ? "border-emerald-200/20 bg-emerald-200/[.075] shadow-[0_0_22px_rgba(134,239,172,.035)]" : past ? "border-transparent bg-white/[.012] opacity-50" : "border-transparent bg-white/[.025] hover:border-white/[.055]"}`}>
-                    <span className={`w-[72px] shrink-0 font-mono text-[9px] ${active ? "text-emerald-100" : "text-slate-500"}`}>{lesson.startTime}<span className="mx-1 text-slate-700">–</span>{lesson.endTime}</span>
-                    <span className={`h-5 w-px shrink-0 ${active ? "bg-emerald-200/40" : "bg-slate-700"}`} />
-                    <span className={`min-w-0 flex-1 truncate text-[10px] font-medium ${active ? "text-emerald-50" : "text-slate-300"}`}>{lesson.subject}</span>
-                    {lesson.classroom && <span className="shrink-0 rounded-md bg-slate-950/30 px-1.5 py-0.5 text-[8px] text-slate-500">{lesson.classroom}</span>}
+                  <div key={lesson.id} className={`flex min-h-[42px] items-center gap-2.5 rounded-xl border px-2.5 py-1.5 transition ${active ? "border-emerald-200/20 bg-emerald-200/[.075] shadow-[0_0_22px_rgba(134,239,172,.035)]" : past ? "border-transparent bg-white/[.012] opacity-50" : "border-transparent bg-white/[.025] hover:border-white/[.055]"}`}>
+                    <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg border text-[10px] font-bold tabular-nums ${active ? "border-emerald-200/40 bg-emerald-200/15 text-emerald-100" : "border-violet-300/15 bg-violet-300/[.07] text-violet-200/90"}`}>{index + 1}</span>
+                    <span className="w-[40px] shrink-0 font-mono leading-[1.3]">
+                      <span className={`block text-[9px] tabular-nums ${active ? "text-emerald-100" : "text-slate-300"}`}>{lesson.startTime}</span>
+                      <span className="block text-[8px] tabular-nums text-slate-600">{lesson.endTime}</span>
+                    </span>
+                    <span className={`h-8 w-px shrink-0 ${active ? "bg-emerald-200/40" : "bg-slate-700/70"}`} />
+                    <span className="min-w-0 flex-1">
+                      <span className={`block truncate text-[11px] font-semibold leading-tight ${active ? "text-emerald-50" : "text-slate-200"}`}>{lesson.subject}</span>
+                      <span className="mt-0.5 block text-[8px] text-slate-600">{lesson.startTime}–{lesson.endTime}{lesson.classroom ? ` · Sala: ${lesson.classroom}` : ""}</span>
+                    </span>
+                    {lesson.classroom && <span className={`shrink-0 rounded-lg border px-1.5 py-1 text-[8px] font-semibold ${active ? "border-emerald-200/25 bg-emerald-200/10 text-emerald-100" : "border-white/[.06] bg-white/[.03] text-slate-400"}`}>Sala: {lesson.classroom}</span>}
                     {active && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-200" />}
                   </div>
                 );
@@ -1007,17 +1029,33 @@ export default function HomeDashboard() {
             <div className="mt-2 flex shrink-0 items-center justify-between border-t border-white/[.05] pt-2 text-[9px] text-slate-600"><span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-emerald-200" /> Trwająca lekcja</span><Link href="/admin" className="flex items-center gap-1 text-slate-500 transition hover:text-emerald-100">Edytuj plan <ArrowRight size={11} /></Link></div>
           </GlassCard>
 
-          <GlassCard delay={0.14} className="work-card hd-glow-mint">
+          <GlassCard
+            delay={0.14}
+            className="work-card hd-glow-mint"
+            onTouchStart={(event) => { workTouchX.current = event.touches[0].clientX; }}
+            onTouchEnd={(event) => {
+              if (workTouchX.current === null) return;
+              const dx = event.changedTouches[0].clientX - workTouchX.current;
+              workTouchX.current = null;
+              if (Math.abs(dx) < 48) return;
+              stepScheduleDay(dx < 0 ? 1 : -1);
+            }}
+          >
             <div className="mb-1 flex shrink-0 items-start justify-between gap-2">
               <div className="min-w-0">
                 <div className="flex items-center gap-2"><span className="grid h-7 w-7 place-items-center rounded-[10px] bg-emerald-300/[.08] text-emerald-200"><Activity size={15} /></span><span className="hd-overline">Godziny pracy</span></div>
-                <div className="mt-2 flex items-baseline gap-2">
-                  <span className="text-[clamp(1.8rem,3vw,2.5rem)] font-light leading-none tracking-[-.075em] text-slate-50">{formatHours(todayHours)}<span className="ml-1 text-sm text-slate-400">h</span></span>
-                  <span className="text-[9px] text-slate-500">dzisiaj</span>
-                  {todayHours > 0 && <span className="flex items-center gap-0.5 text-[9px] font-medium text-emerald-200"><Check size={11} /> zapisano</span>}
-                </div>
+                <motion.div key={dateKey(viewedDate)} initial={{ opacity: 0, x: slideDir === 0 ? 0 : 12 * slideDir }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2, ease: "easeOut" }} className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <span className="text-[clamp(1.8rem,3vw,2.5rem)] font-light leading-none tracking-[-.075em] text-slate-50">{formatHours(viewedDayHours)}<span className="ml-1 text-sm text-slate-400">h</span></span>
+                  <span className="text-[9px] text-slate-500">{workDayLabel}{viewedDayLogs.length > 0 && ` · ${entriesLabel}`}</span>
+                  {!viewingToday && <button onClick={resetScheduleDay} className="hd-button rounded-full border border-emerald-200/20 bg-emerald-200/[.07] px-2 py-0.5 text-[8px] font-semibold text-emerald-100 transition hover:bg-emerald-200/[.14]">Dziś</button>}
+                  {viewedDayHours > 0 && <span className="flex items-center gap-0.5 text-[9px] font-medium text-emerald-200"><Check size={11} /> zapisano</span>}
+                </motion.div>
               </div>
-              <button onClick={() => setComposer("work")} className="hd-button flex shrink-0 items-center gap-1.5 rounded-xl border border-emerald-200/15 bg-emerald-200/[.07] px-2.5 py-2 text-[9px] font-semibold text-emerald-100 hover:bg-emerald-200/[.13] sm:px-3"><Plus size={13} /> Dodaj wpis</button>
+              <div className="flex shrink-0 items-center gap-1">
+                <button onClick={() => stepScheduleDay(-1)} aria-label="Poprzedni dzień godzin pracy" title="Poprzedni dzień" className="hd-button rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-emerald-100"><ChevronLeft size={15} /></button>
+                <button onClick={() => stepScheduleDay(1)} aria-label="Następny dzień godzin pracy" title="Następny dzień" className="hd-button rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-emerald-100"><ChevronRight size={15} /></button>
+                <button onClick={() => setComposer("work")} className="hd-button flex items-center gap-1.5 rounded-xl border border-emerald-200/15 bg-emerald-200/[.07] px-2.5 py-2 text-[9px] font-semibold text-emerald-100 hover:bg-emerald-200/[.13] sm:px-3"><Plus size={13} /> Dodaj wpis</button>
+              </div>
             </div>
             <div className="mb-1 flex shrink-0 items-center justify-between"><p className="text-[9px] text-slate-500">TYDZIEŃ · {formatHours(weekHours)} h <span className="mx-1 text-slate-700">/</span> 40 h</p><Link href="/admin" className="text-[9px] text-slate-600 hover:text-slate-300">rejestr →</Link></div>
             <WeekChart workLogs={dashboard.workLogs} now={currentTime} />
