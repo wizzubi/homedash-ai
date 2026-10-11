@@ -62,7 +62,7 @@ export function collectDueAlerts(data: SchedulerInput, now: Date): AlertFire[] {
       key: `garbage-eve:${item.id}:${today}`,
       kind: "garbage",
       title: "Wywóz jutro",
-      body: `🔔 Jutro wywóz: ${label}. Wystaw pojemniki do rana.`,
+      body: `Jutro wywóz: ${label}. Wystaw pojemniki do rana.`,
       sound: "alert",
     });
   }
@@ -76,7 +76,7 @@ export function collectDueAlerts(data: SchedulerInput, now: Date): AlertFire[] {
       key: `task-due:${task.id}:${today}`,
       kind: "task",
       title: "Termin dziś",
-      body: `🔔 Dziś termin: ${task.title}.`,
+      body: `Dziś termin: ${task.title}.`,
       sound: "chime",
     });
   }
@@ -92,7 +92,7 @@ export function collectDueAlerts(data: SchedulerInput, now: Date): AlertFire[] {
       key: `note:${note.id}`,
       kind: "note",
       title: note.title || "Przypomnienie",
-      body: `🔔 ${note.title ? `${note.title}: ` : ""}${note.content}`,
+      body: `${note.title ? `${note.title}: ` : ""}${note.content}`,
       sound: "chime",
     });
   }

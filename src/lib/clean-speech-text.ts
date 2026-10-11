@@ -45,6 +45,10 @@ export function cleanSpeechText(raw: string): string {
   // Resztki techniczne.
   text = text.replace(/https?:\/\/\S+/gi, " ");
   text = text.replace(/[<>|•·]/g, " ");
+  // Emoji i symbole graficzne (⚡🔔🌿☕→←•): lektor czytałby je na głos
+  // („piorun”, „dzwonek”) albo jąkał się na selektorach wariantu.
+  // Myślniki (–, —), wielokropek (…) i zwykły minus zostają.
+  text = text.replace(/[\u{1F000}-\u{1FAFF}\u{2190}-\u{21FF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu, " ");
   text = text.replace(/[ \t]+/g, " ");
   // Linie listy („- punkt”, „* punkt”, „1. punkt”) → zdania; po dwukropku
   // pauza bez kropki, żeby lektor nie czytał „kropka”.

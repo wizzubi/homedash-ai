@@ -726,7 +726,7 @@ export default function HomeDashboard() {
         case "addTask": {
           await createTask(intent.title, intent.assignedTo);
           pushLocal(
-            `⚡ Dodałam zadanie: ${intent.title}${intent.assignedTo ? ` (dla: ${intent.assignedTo})` : ""}.`,
+            `Dodałam zadanie: ${intent.title}${intent.assignedTo ? ` (dla: ${intent.assignedTo})` : ""}.`,
           );
           return;
         }
@@ -746,14 +746,14 @@ export default function HomeDashboard() {
           await refreshDashboard();
           pushLocal(
             intent.completed
-              ? `⚡ Zadanie „${match.title}” oznaczyłam jako wykonane.`
-              : `⚡ Zadanie „${match.title}” wróciło na listę otwartych.`,
+              ? `Zadanie „${match.title}” oznaczyłam jako wykonane.`
+              : `Zadanie „${match.title}” wróciło na listę otwartych.`,
           );
           return;
         }
         case "addNote": {
           await createNote({ title: intent.title || "Notatka głosowa", content: intent.content, color: "amber" });
-          pushLocal("⚡ Zapisałam notatkę i przypięłam ją na tablicy.");
+          pushLocal("Zapisałam notatkę i przypięłam ją na tablicy.");
           return;
         }
         case "logWork": {
@@ -765,8 +765,8 @@ export default function HomeDashboard() {
           });
           pushLocal(
             intent.startTime && intent.endTime
-              ? `⚡ Zapisane. Pracowałaś od ${intent.startTime} do ${intent.endTime}.`
-              : `⚡ Zapisane ${formatHours(intent.hours ?? 0)} godzin pracy na dziś.`,
+              ? `Zapisane. Pracowałaś od ${intent.startTime} do ${intent.endTime}.`
+              : `Zapisane ${formatHours(intent.hours ?? 0)} godzin pracy na dziś.`,
           );
           return;
         }
@@ -774,20 +774,43 @@ export default function HomeDashboard() {
           const current = now ?? new Date();
           const monday = localMidnight(current);
           monday.setDate(monday.getDate() - (isoWeekday(current) - 1));
-          const total = dashboard.workLogs.reduce((sum, log) => {
+          const sundayEnd = new Date(monday);
+          sundayEnd.setDate(sundayEnd.getDate() + 7);
+          const inPeriod = (log: WorkLog) => {
             const date = new Date(log.date);
             if (intent.period === "week") {
-              return date >= monday && date <= current ? sum + log.hours : 0;
+              return date >= monday && date < sundayEnd;
             }
             if (intent.period === "month") {
-              return date.getFullYear() === current.getFullYear() && date.getMonth() === current.getMonth()
-                ? sum + log.hours
-                : 0;
+              return date.getFullYear() === current.getFullYear() && date.getMonth() === current.getMonth();
             }
-            return dateKey(log.date) === dateKey(current) ? sum + log.hours : 0;
-          }, 0);
+            return dateKey(log.date) === dateKey(current);
+          };
+          const total = dashboard.workLogs.reduce((sum, log) => sum + (inPeriod(log) ? log.hours : 0), 0);
+          const entries = dashboard.workLogs.filter(inPeriod).length;
           const label = intent.period === "week" ? "W tym tygodniu" : intent.period === "month" ? "W tym miesiącu" : "Dziś";
-          pushLocal(`⚡ ${label} masz zapisane ${formatHours(total)} godzin pracy.`);
+          if (entries === 0 && intent.period === "today") {
+            // Puste „dziś” to najczęstsze nieporozumienie — dopowiedz kontekst tygodnia.
+            const weekTotal = dashboard.workLogs.reduce((sum, log) => {
+              const date = new Date(log.date);
+              return date >= monday && date < sundayEnd ? sum + log.hours : 0;
+            }, 0);
+            const weekEntries = dashboard.workLogs.filter((log) => {
+              const date = new Date(log.date);
+              return date >= monday && date < sundayEnd;
+            }).length;
+            pushLocal(
+              weekEntries > 0
+                ? `Dziś nie masz zapisanych godzin. W tym tygodniu: ${formatHours(weekTotal)} godzin w ${weekEntries} wpisach.`
+                : "Dziś nie masz zapisanych godzin — ani w tym tygodniu nic jeszcze nie ma.",
+            );
+            return;
+          }
+          pushLocal(
+            entries === 0
+              ? `${label} brak zapisanych godzin pracy.`
+              : `${label} masz zapisane ${formatHours(total)} godzin pracy.`,
+          );
           return;
         }
         case "wasteQuery": {
@@ -800,7 +823,7 @@ export default function HomeDashboard() {
             )
             .sort((a, b) => new Date(a.pickupDate).getTime() - new Date(b.pickupDate).getTime())[0];
           if (!item) {
-            pushLocal("⚡ Nie widzę najbliższego terminu w kalendarzu odpadów. Możesz dodać go w panelu administratora.");
+            pushLocal("Nie widzę najbliższego terminu w kalendarzu odpadów. Możesz dodać go w panelu administratora.");
             return;
           }
           const fractionLabel =
@@ -808,30 +831,30 @@ export default function HomeDashboard() {
           const days = daysUntil(item.pickupDate, reference);
           pushLocal(
             days === 0
-              ? `⚡ Tak, dziś wystaw ${fractionLabel}.`
-              : `⚡ Najbliższy odbiór: ${fractionLabel}, ${days === 1 ? "jutro" : `za ${days} dni`}.`,
+              ? `Tak, dziś wystaw ${fractionLabel}.`
+              : `Najbliższy odbiór: ${fractionLabel}, ${days === 1 ? "jutro" : `za ${days} dni`}.`,
           );
           return;
         }
         case "radioPlay": {
           const station = RADIO_STATIONS.find((entry) => entry.id === intent.stationId) ?? null;
           emitRadioCommand({ action: "play", stationId: station?.id ?? null });
-          pushLocal(station ? `⚡ Włączam ${station.name}.` : "⚡ Włączam radio.");
+          pushLocal(station ? `Włączam ${station.name}.` : "Włączam radio.");
           return;
         }
         case "radioStop": {
           emitRadioCommand({ action: "stop" });
-          pushLocal("⚡ Zatrzymano odtwarzanie.");
+          pushLocal("Zatrzymano odtwarzanie.");
           return;
         }
         case "volumeUp": {
           emitRadioCommand({ action: "volume-up" });
-          pushLocal("⚡ Głośniej.");
+          pushLocal("Głośniej.");
           return;
         }
         case "volumeDown": {
           emitRadioCommand({ action: "volume-down" });
-          pushLocal("⚡ Ciszej.");
+          pushLocal("Ciszej.");
           return;
         }
         case "lessonEnd":
@@ -852,8 +875,8 @@ export default function HomeDashboard() {
           if (!child) {
             pushLocal(
               knownChildren.length > 0
-                ? `⚡ O które dziecko chodzi? Znam: ${knownChildren.join(", ")}.`
-                : "⚡ Nie mam zapisanych dzieci ani planu lekcji. Dodaj je w panelu administratora.",
+                ? `O które dziecko chodzi? Znam: ${knownChildren.join(", ")}.`
+                : "Nie mam zapisanych dzieci ani planu lekcji. Dodaj je w panelu administratora.",
             );
             return;
           }
@@ -872,30 +895,30 @@ export default function HomeDashboard() {
                   ? "wczoraj"
                   : target.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "numeric" });
           if (iso > 5) {
-            pushLocal(`⚡ W weekend nie ma lekcji — ${child} odpoczywa.`);
+            pushLocal(`W weekend nie ma lekcji — ${child} odpoczywa.`);
             return;
           }
           const lessons = dashboard.timetable
             .filter((lesson) => lesson.childName === child && lesson.dayOfWeek === iso)
             .sort((a, b) => a.startTime.localeCompare(b.startTime));
           if (lessons.length === 0) {
-            pushLocal(`⚡ ${child} nie ma lekcji ${dayLabel}.`);
+            pushLocal(`${child} nie ma lekcji ${dayLabel}.`);
             return;
           }
           if (intent.kind === "lessonEnd") {
             const last = lessons[lessons.length - 1];
-            pushLocal(`⚡ ${child} kończy lekcje ${dayLabel} o ${last.endTime} (${last.subject}).`);
+            pushLocal(`${child} kończy lekcje ${dayLabel} o ${last.endTime} (${last.subject}).`);
             return;
           }
           if (intent.kind === "lessonCount") {
-            pushLocal(`⚡ ${child} ma ${dayLabel} ${polishLessons(lessons.length)}.`);
+            pushLocal(`${child} ma ${dayLabel} ${polishLessons(lessons.length)}.`);
             return;
           }
           const plan = lessons
             .slice(0, 8)
             .map((lesson, index) => `${index + 1}. ${lesson.subject} ${lesson.startTime}–${lesson.endTime}${lesson.classroom ? ` (s. ${lesson.classroom})` : ""}`)
             .join("; ");
-          pushLocal(`⚡ Plan lekcji — ${child} ${dayLabel}: ${plan}.`);
+          pushLocal(`Plan lekcji — ${child} ${dayLabel}: ${plan}.`);
           return;
         }
         case "busQuery": {
@@ -917,7 +940,7 @@ export default function HomeDashboard() {
           const byHint = /szko[lł]/.test(said) ? schoolStop : /domu|\bdom\b/.test(said) ? homeStop : "";
           const stop = byName || byHint || homeStop || stops[0] || null;
           if (!stop) {
-            pushLocal("⚡ Brak rozkładu jazdy. Wczytaj plik CSV lub JSON w panelu administratora (zakładka Autobus).");
+            pushLocal("Brak rozkładu jazdy. Wczytaj plik CSV lub JSON w panelu administratora (zakładka Autobus).");
             return;
           }
           const nowMinutes = reference.getHours() * 60 + reference.getMinutes();
@@ -931,7 +954,7 @@ export default function HomeDashboard() {
             .sort((a, b) => a.inMinutes - b.inMinutes)
             .slice(0, 3);
           if (upcoming.length === 0) {
-            pushLocal(`⚡ Dziś nie ma już odjazdów z przystanku ${stop}.`);
+            pushLocal(`Dziś nie ma już odjazdów z przystanku ${stop}.`);
             return;
           }
           const list = upcoming
@@ -939,7 +962,7 @@ export default function HomeDashboard() {
               inMinutes <= 1 ? `linia ${item.line} (${item.direction}) — już/jeszcze chwilę` : `linia ${item.line} (${item.direction}) o ${item.departureTime} (za ${inMinutes} min)`,
             )
             .join("; ");
-          pushLocal(`⚡ Najbliższe odjazdy · ${stop}: ${list}.`);
+          pushLocal(`Najbliższe odjazdy · ${stop}: ${list}.`);
           return;
         }
       }

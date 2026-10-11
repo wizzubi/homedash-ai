@@ -398,13 +398,40 @@ export function createHomeTools(tracker?: { used: string[] }): ToolSet {
           await ensureSchema();
           const rows = await db.select().from(workLogs);
           const today = new Date();
-          const from = period === "today" ? startOfToday() : period === "week" ? startOfWeek(today) : startOfMonth(today);
-          const to = period === "today" ? startOfToday().getTime() + 86_400_000 : new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).getTime();
+          const weekStart = startOfWeek(today);
+          const weekEnd = new Date(weekStart);
+          weekEnd.setDate(weekEnd.getDate() + 7);
+          const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+          const from = period === "today" ? startOfToday() : period === "week" ? weekStart : startOfMonth(today);
+          // Koniec zakresu to KONIEC okresu (tydzień: następny poniedziałek,
+          // miesiąc: 1. dzień kolejnego), nie „jutro” — inaczej wpisy z końcówki
+          // okresu wypadały z podsumowania.
+          const to =
+            period === "today"
+              ? startOfToday().getTime() + 86_400_000
+              : (period === "week" ? weekEnd : monthEnd).getTime();
           const inRange = rows.filter((row) => row.date.getTime() >= from.getTime() && row.date.getTime() < to);
           const total = roundHours(inRange.reduce((sum, row) => sum + row.hours, 0));
           const label = period === "today" ? "dzisiaj" : period === "week" ? "w tym tygodniu" : "w tym miesiącu";
           track("getWorkSummary");
           if (inRange.length === 0) {
+            // Puste „dzisiaj” to najczęstsze nieporozumienie — dopowiedz kontekst tygodnia.
+            if (period === "today") {
+              const weekRows = rows.filter(
+                (row) => row.date.getTime() >= weekStart.getTime() && row.date.getTime() < weekEnd.getTime(),
+              );
+              const weekTotal = roundHours(weekRows.reduce((sum, row) => sum + row.hours, 0));
+              const weekInfo =
+                weekRows.length > 0
+                  ? ` W tym tygodniu masz zapisane ${String(weekTotal).replace(".", ",")} h w ${weekRows.length} wpisach.`
+                  : " W tym tygodniu też nic jeszcze nie zapisano.";
+              return {
+                success: true,
+                message: `Brak wpisów godzin pracy dzisiaj.${weekInfo}`,
+                hours: 0,
+                entries: 0,
+              };
+            }
             return { success: true, message: `Brak wpisów godzin pracy ${label}.`, hours: 0, entries: 0 };
           }
           return {
@@ -813,7 +840,7 @@ export async function runLocalCommand(
     case "lessonCount":
     case "lessonPlan": {
       const reply = await answerLessonFromDb(intent.child, intent.day, intent.kind);
-      if (reply) return { reply: `⚡ ${reply}`, mutated: false };
+      if (reply) return { reply: `${reply}`, mutated: false };
       return null;
     }
     case "radioPlay":
@@ -825,7 +852,7 @@ export async function runLocalCommand(
     }
     case "busQuery": {
       const reply = await answerBusFromDb(intent.stop, trimmed);
-      if (reply) return { reply: `⚡ ${reply}`, mutated: false };
+      if (reply) return { reply: `${reply}`, mutated: false };
       return null;
     }
   }

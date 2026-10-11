@@ -129,23 +129,33 @@ export function parseLessonDay(text: string): LessonDay {
  * Kandydat na imię dziecka („ile lekcji ma Lena”, „kiedy kończy Tomek”,
  * „plan lekcji Leny”). Dopasowanie rozmyte do znanych imion robi
  * `handleUserCommand` — tu zwracamy surowy fragment lub `null`.
+ *
+ * Słowa czasu („jutro”, „w poniedziałek”) nigdy nie są imieniem — dyktowanie
+ * stawia je tuż po czasowniku („kończy jutro lekcje”).
  */
+const NON_NAME = /^(lekcj[eaie]|lekcja|szkoł[ay]|szkola|plan|planu|się|sie|dziś|dzisiaj|jutro|pojutrze|wczoraj|przedwczoraj|tygodniu|tydzień|weekend|poniedziałek|poniedzialek|wtorek|środa|sroda|czwartek|piątek|piatek|sobota|niedziela|szkole|domu)$/i;
+
 export function parseLessonChild(text: string): string | null {
-  // Wzorce szczegółowe (imie po frazie, z pominięciem słów-kluczy).
-  const specific =
-    text.match(/ile\s+lekcji\s+(?:ma\s+)?([\p{L}]{2,24})/iu) ??
-    text.match(/(?:ma|mają|maja)\s+lekcje\s+([\p{L}]{2,24})/iu) ??
-    text.match(/(?:kończy|konczy)\s+([\p{L}]{2,24})/iu) ??
-    text.match(/plan\s+lekcji\s+([\p{L}]{2,24})\s*[?.!]*$/iu) ??
-    text.match(/lekcje\s+([\p{L}]{2,24})\s*[?.!]*$/iu);
-  if (specific?.[1]) return specific[1].trim();
+  // Wzorce szczegółowe w kolejności: imię przed czasownikiem, potem po nim.
+  const patterns = [
+    /(?:kiedy|o\s+któr(?:ej|a)|do\s+któr(?:ej|a))\s+([\p{L}]{2,24})\s+(?:kończy|konczy)/iu,
+    /ile\s+lekcji\s+(?:ma\s+)?([\p{L}]{2,24})/iu,
+    /(?:ma|mają|maja)\s+lekcje\s+([\p{L}]{2,24})/iu,
+    /(?:kończy|konczy)\s+([\p{L}]{2,24})/iu,
+    /plan\s+lekcji\s+([\p{L}]{2,24})\s*[?.!]*$/iu,
+    /lekcje\s+([\p{L}]{2,24})\s*[?.!]*$/iu,
+  ];
+  for (const pattern of patterns) {
+    const name = text.match(pattern)?.[1]?.trim();
+    if (name && !NON_NAME.test(name)) return name;
+  }
   const match = text.match(
     /(?:ma|mają|maja|kończy|konczy|lekcje|lekcji|lekcja|plan(?:u)?\s+lekcji?)\s+([\p{L}]{2,24})/iu,
   );
   const name = match?.[1]?.trim();
   if (!name) return null;
   // Odrzuć słowa-klucze złapane zamiast imienia („ma lekcje”, „plan lekcji”).
-  if (/^(lekcj[eaie]|lekcja|szkoł[ay]|szkola|plan|planu|dziś|dzisiaj|jutro|pojutrze|wczoraj|tygodniu|domu)$/i.test(name)) {
+  if (NON_NAME.test(name)) {
     return null;
   }
   return name;
@@ -292,11 +302,15 @@ export function parseLocalCommand(raw: string): LocalIntent | null {
   // Dane są w pamięci dashboardu — odpowiedź w milisekundy, bez AI.
   // Detekcja rodzaju na tekście bez ogonków: dyktowanie (STT) często zwraca
   // „o ktorej konczy” zamiast „o której kończy” — obie formy muszą działać.
+  // Rodzaj „koniec lekcji” nie wymaga sąsiedztwa słów („Kiedy Mikołaj kończy
+  // jutro lekcje?”), bo imię stoi w środku — inaczej wpada w AI (Św. Mikołaj).
   if (/lekcj|kończy|konczy|szkoł|szkol|szkola/.test(t)) {
     const day = parseLessonDay(text);
     const child = parseLessonChild(text);
     const f = foldPl(text);
-    if (/o\s+ktor|do\s+ktor|kiedy\s+konczy|kiedy\s+koniec|do\s+kiedy/.test(f)) {
+    const asksEnd =
+      (/konczy/.test(f) && /kiedy|o\s*ktor|do\s*ktor/.test(f)) || /kiedy\s+koniec|do\s+kiedy/.test(f);
+    if (asksEnd) {
       return { kind: "lessonEnd", child, day };
     }
     if (/ile\s+lekcji|ile\s+ma\s+lekcji|ile\s+zajec/.test(f)) {
