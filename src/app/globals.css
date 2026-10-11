@@ -1,0 +1,179 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --canvas: #090d16;
+  --surface: rgba(17, 25, 39, 0.76);
+  --line: rgba(148, 163, 184, 0.12);
+  --mint: #a8eccb;
+  --muted: #8290a5;
+}
+
+* { box-sizing: border-box; }
+
+/* Strona ZAWSZE pozostaje przewijalna palcem — zero-scroll dotyczy tylko kiosku (.home-shell). */
+html {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  -webkit-text-size-adjust: 100%;
+  overflow-y: auto;
+}
+body {
+  width: 100%;
+  min-height: 100dvh;
+  margin: 0;
+  background:
+    radial-gradient(ellipse at 12% -8%, rgba(102, 151, 137, .12), transparent 35%),
+    radial-gradient(ellipse at 88% 18%, rgba(71, 104, 159, .11), transparent 33%),
+    var(--canvas);
+  color: #eef2f6;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01" on;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+}
+button, input, textarea, select { font: inherit; }
+button { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+input, textarea, select { touch-action: manipulation; }
+::selection { background: rgba(168, 236, 203, .3); color: #f8fffa; }
+
+/* --- Przewijanie dotykowe (pionowe i poziome) ----------------------------- */
+.hd-scroll {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, .28) transparent;
+}
+.hd-scroll-x {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+  scrollbar-width: thin;
+}
+.hd-scroll::-webkit-scrollbar, .hd-scroll-x::-webkit-scrollbar { width: 4px; height: 4px; }
+.hd-scroll::-webkit-scrollbar-thumb, .hd-scroll-x::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(148, 163, 184, .24); }
+.hd-scroll::-webkit-scrollbar-track, .hd-scroll-x::-webkit-scrollbar-track { background: transparent; }
+
+/* --- Kafelki -------------------------------------------------------------- */
+.hd-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: linear-gradient(148deg, rgba(22, 32, 48, .86), rgba(14, 20, 32, .78));
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .15), inset 0 1px rgba(255, 255, 255, .025);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+.hd-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(226, 240, 255, .12), transparent);
+  pointer-events: none;
+}
+.hd-card-hover { transition: border-color .22s ease, box-shadow .22s ease, transform .22s ease; }
+.hd-card-hover:hover { border-color: rgba(168, 236, 203, .22); box-shadow: 0 16px 40px rgba(0, 0, 0, .22), 0 0 24px rgba(125, 212, 174, .035); }
+.hd-overline { color: #8b99ac; font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.hd-muted { color: var(--muted); }
+.hd-input {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, .16);
+  border-radius: 12px;
+  background: rgba(8, 13, 22, .72);
+  color: #f2f5f8;
+  outline: none;
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+.hd-input:focus { border-color: rgba(168, 236, 203, .56); box-shadow: 0 0 0 3px rgba(168, 236, 203, .08); }
+.hd-input::placeholder { color: #718096; }
+.hd-button { transition: transform .18s ease, background-color .18s ease, border-color .18s ease; }
+.hd-button:active { transform: scale(.97); }
+.hd-glow-mint { box-shadow: inset 0 0 32px rgba(115, 202, 157, .035), 0 0 26px rgba(115, 202, 157, .025); }
+.hd-glow-blue { box-shadow: inset 0 0 30px rgba(111, 165, 241, .035); }
+.hd-glow-coral { box-shadow: inset 0 0 28px rgba(244, 125, 115, .035); }
+
+@keyframes status-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(168, 236, 203, .13); }
+  50% { box-shadow: 0 0 0 7px rgba(168, 236, 203, 0); }
+}
+.status-breathe { animation: status-breathe 2.4s ease-out infinite; }
+
+/* --- Panel administratora i kreator: zwykłe przewijanie strony ------------ */
+.admin-page { min-height: 100dvh; }
+.setup-page { min-height: 100dvh; overflow-x: hidden; }
+@media (orientation: landscape) and (min-width: 1180px) and (min-height: 720px) {
+  .setup-page { display: grid; place-items: start center; }
+}
+
+/* --- Dashboard: układ mobilny / pionowy (przewijany) ---------------------- */
+.home-shell {
+  display: flex;
+  min-height: 100dvh;
+  flex-direction: column;
+  padding: 12px;
+}
+.home-header { min-height: 54px; margin-bottom: 12px; }
+.dashboard-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.dashboard-side { display: grid; gap: 12px; }
+.weather-card { min-height: 235px; }
+.waste-card { min-height: 260px; }
+.stats-card { min-height: 150px; }
+.school-card { min-height: 360px; }
+.work-card { min-height: 250px; }
+.tasks-card { min-height: 245px; }
+.notes-card { min-height: 200px; }
+.documents-card { min-height: 205px; }
+.assistant-card { min-height: 116px; }
+.home-footer { min-height: 20px; }
+
+/* --- Kiosk 16:9 / 16:10: zero-scroll TYLKO na dashboardzie ---------------- */
+@media (orientation: landscape) and (min-width: 920px) {
+  .home-shell {
+    height: 100dvh;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+    padding: 14px 16px 7px;
+  }
+  .home-header { min-height: 54px; height: 54px; margin-bottom: 12px; flex-shrink: 0; }
+  .dashboard-grid { flex: 1 1 auto; min-height: 0; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; }
+  .dashboard-side { min-height: 0; gap: 14px; }
+  .left-stack { grid-column: span 3; grid-template-rows: 1.02fr 1.2fr .76fr; }
+  .center-stack { grid-column: span 6; grid-template-rows: 1.14fr .86fr; }
+  .right-stack { grid-column: span 3; grid-template-rows: 1.12fr .88fr 1.02fr .7fr; }
+  .weather-card, .waste-card, .stats-card, .school-card, .work-card,
+  .tasks-card, .notes-card, .documents-card, .assistant-card { min-height: 0; }
+  .home-footer { height: 14px; min-height: 14px; padding-top: 3px; }
+}
+
+@media (max-height: 690px) and (orientation: landscape) and (min-width: 920px) {
+  .home-shell { padding-top: 9px; }
+  .home-header { height: 48px; min-height: 48px; margin-bottom: 8px; }
+  .dashboard-grid { gap: 10px; }
+  .dashboard-side, .left-stack, .center-stack, .right-stack { gap: 10px; }
+  .hd-card { padding: 11px; border-radius: 17px; }
+  .hd-overline { font-size: 9px; }
+  .home-footer { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
