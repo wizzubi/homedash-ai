@@ -34,6 +34,24 @@ export const RADIO_STATIONS: RadioStation[] = [
     aliases: ["rmf", "rmf fm", "eremef"],
   },
   {
+    id: "rmf-classic",
+    name: "RMF Classic",
+    streamUrl: "https://rs101-krk.rmfstream.pl/RMFCLASSIC48",
+    aliases: ["rmf classic", "classic", "klasyka", "muzyka klasyczna"],
+  },
+  {
+    id: "rmf24",
+    name: "RMF24",
+    streamUrl: "https://rs101-krk.rmfstream.pl/RMF24",
+    aliases: ["rmf 24", "rmf24", "rmf dwadzieścia cztery", "wiadomosci", "wiadomości", "informacje"],
+  },
+  {
+    id: "eska",
+    name: "Radio ESKA",
+    streamUrl: "https://ic2.smcdn.pl/3990-1.mp3",
+    aliases: ["eska", "radio eska", "eska warszawa"],
+  },
+  {
     id: "antyradio",
     name: "Antyradio",
     streamUrl: "https://r.dcs.redcdn.pl/dcs/o2/antyradio/live/mp3_128",

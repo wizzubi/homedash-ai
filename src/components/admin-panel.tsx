@@ -4,6 +4,7 @@ import Link from "next/link";
 import {
   Activity,
   ArrowLeft,
+  Bus,
   CalendarDays,
   CheckCircle2,
   Clock3,
@@ -32,6 +33,7 @@ type WorkLog = { id: string; date: string; hours: number; startTime: string | nu
 type GarbageItem = { id: string; fraction: string; pickupDate: string };
 type DocumentItem = { id: string; title: string; category: string; expirationDate: string };
 type Lesson = { id: string; childName: string; dayOfWeek: number; startTime: string; endTime: string; subject: string; classroom: string | null };
+type BusItem = { id: string; line: string; stopName: string; direction: string; departureTime: string; dayType: string };
 type FamilyMember = { name: string; role: "parent" | "child" };
 type AdminData = {
   tasks: TaskItem[];
@@ -39,12 +41,13 @@ type AdminData = {
   garbage: GarbageItem[];
   documents: DocumentItem[];
   timetable: Lesson[];
+  bus: BusItem[];
   notes: unknown[];
   config: Record<string, string>;
   family?: FamilyMember[];
   databaseTarget?: "turso" | "local-file";
 };
-type TabId = "overview" | "lessons" | "waste" | "documents" | "work" | "settings";
+type TabId = "overview" | "lessons" | "waste" | "bus" | "documents" | "work" | "settings";
 type LessonForm = { id: string; childName: string; dayOfWeek: string; startTime: string; endTime: string; subject: string; classroom: string };
 type WasteForm = { id: string; fraction: string; pickupDate: string };
 type DocumentForm = { id: string; title: string; category: string; expirationDate: string };
@@ -61,6 +64,7 @@ const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: "overview", label: "Przegląd", icon: Home },
   { id: "lessons", label: "Plan lekcji", icon: CalendarDays },
   { id: "waste", label: "Odpady i ICS", icon: Recycle },
+  { id: "bus", label: "Autobus", icon: Bus },
   { id: "documents", label: "Dokumenty", icon: FileText },
   { id: "work", label: "Godziny pracy", icon: Clock3 },
   { id: "settings", label: "Ustawienia domu", icon: Settings },
@@ -114,7 +118,7 @@ export default function AdminPanel() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [configForm, setConfigForm] = useState({ home_city: "", city_lat: "", city_lon: "", wake_word: "Hej Dash", tts_voice: "pl-PL-ZofiaNeural" });
+  const [configForm, setConfigForm] = useState({ home_city: "", city_lat: "", city_lon: "", wake_word: "Hej Dash", tts_voice: "pl-PL-ZofiaNeural", garbage_alert_hour: "18:00", alert_tts: "true" });
   const [memberDraft, setMemberDraft] = useState({ name: "", role: "parent" as "parent" | "child" });
   const [newPin, setNewPin] = useState("");
   const [lessonFilter, setLessonFilter] = useState({ child: "Lena", day: "1" });
@@ -145,6 +149,8 @@ export default function AdminPanel() {
       city_lon: config.city_lon || "",
       wake_word: config.wake_word || "Hej Dash",
       tts_voice: config.tts_voice || "pl-PL-ZofiaNeural",
+      garbage_alert_hour: config.garbage_alert_hour || "18:00",
+      alert_tts: config.alert_tts || "true",
     });
     const child = next.timetable[0]?.childName || (next.family || []).find((member) => member.role === "child")?.name || "";
     setLessonFilter((previous) => ({ ...previous, child: previous.child || child }));
@@ -273,6 +279,33 @@ export default function AdminPanel() {
     return [...new Set([...fromFamily, ...fromLessons])];
   }, [data]);
 
+  const busStops = useMemo(
+    () => [...new Set((data?.bus || []).map((item) => item.stopName))].sort((a, b) => a.localeCompare(b, "pl-PL")),
+    [data],
+  );
+
+  async function importBus(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > 500_000) { setError("Plik rozkładu może mieć maksymalnie 500 KB."); event.target.value = ""; return; }
+    setBusy("bus-import");
+    setError("");
+    setNotice("");
+    try {
+      const content = await file.text();
+      const result = await adminRequest<{ imported: number; detected: number; stops?: string[]; warnings?: string[] }>("bus-import", { content });
+      await reload();
+      const extra = result.warnings?.length ? ` · uwagi: ${result.warnings.slice(0, 2).join("; ")}` : "";
+      setNotice(`Rozkład wczytany: ${result.imported} nowych odjazdów (rozpoznano ${result.detected})${result.stops?.length ? ` · przystanki: ${result.stops.slice(0, 4).join(", ")}` : ""}${extra}.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Nie udało się odczytać rozkładu jazdy.");
+    } finally { setBusy(""); event.target.value = ""; }
+  }
+
+  async function saveBusStop(stopName: string) {
+    await perform("bus-stop-save", { stopName }, stopName ? `Przystanek domowy: ${stopName}.` : "Wyczyszczono przystanek domowy.");
+  }
+
   const filteredLessons = (data?.timetable || [])
     .filter((lesson) => lesson.childName === lessonFilter.child && String(lesson.dayOfWeek) === lessonFilter.day)
     .sort((a, b) => a.startTime.localeCompare(b.startTime));
@@ -379,6 +412,14 @@ export default function AdminPanel() {
             <div className="hd-card flex flex-wrap items-center gap-4 p-4 sm:p-5"><span className="grid h-10 w-10 place-items-center rounded-xl border border-sky-200/10 bg-sky-200/[.06] text-sky-100"><Upload size={17} /></span><div className="min-w-0 flex-1"><h2 className="text-[12px] font-semibold text-slate-200">Import kalendarza .ics</h2><p className="mt-1 text-[9px] leading-relaxed text-slate-600">Wczytaj plik z gminy lub wspólnoty. Rozpoznajemy Bio, szkło, plastik/metal i odpady zmieszane, również wydarzenia cykliczne.</p></div><label className="hd-button inline-flex min-h-9 cursor-pointer items-center gap-2 rounded-xl border border-sky-200/15 bg-sky-200/[.06] px-3 text-[10px] font-semibold text-sky-100 hover:bg-sky-200/10">{busy === "ics-import" ? <LoaderCircle size={13} className="animate-spin" /> : <Upload size={13} />}{busy === "ics-import" ? "Importuję…" : "Wybierz plik ICS"}<input type="file" accept=".ics,text/calendar" disabled={!!busy} onChange={(event) => void importIcs(event)} className="sr-only" /></label></div>
           </div>}
 
+          {activeTab === "bus" && <div className="space-y-4">
+            <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(310px,.72fr)]">
+              <div className="hd-card p-4 sm:p-5"><div className="mb-4 flex items-center justify-between"><div><h2 className="text-sm font-semibold text-slate-200">Rozkład jazdy</h2><p className="mt-1 text-[9px] text-slate-600">Odjazdy z wczytanych plików CSV / JSON.</p></div><span className="rounded-full border border-emerald-200/10 bg-emerald-200/[.04] px-2.5 py-1 text-[9px] text-emerald-100">{data?.bus.length || 0} odjazdów</span></div><div className="space-y-1.5">{[...(data?.bus || [])].sort((a, b) => a.stopName.localeCompare(b.stopName, "pl-PL") || a.departureTime.localeCompare(b.departureTime)).slice(0, 60).map((item) => <div key={item.id} className="flex items-center gap-3 rounded-xl border border-slate-800/70 bg-white/[.02] px-3 py-2.5"><span className="grid h-8 min-w-8 place-items-center rounded-xl bg-sky-300/[.08] px-1.5 font-mono text-[11px] font-bold text-sky-100">{item.line}</span><span className="min-w-0 flex-1"><span className="block truncate text-[10px] font-medium text-slate-200">{item.stopName} → {item.direction}</span><span className="mt-0.5 block text-[9px] text-slate-600">{item.departureTime} <span className="mx-1">·</span> {item.dayType === "WEEKEND" ? "weekend" : "powszedni"}</span></span><button onClick={() => void deleteItem("bus-delete", item.id, "Odjazd")} className="rounded-lg p-1.5 text-slate-600 hover:text-rose-200" title="Usuń odjazd"><Trash2 size={13} /></button></div>)}{!data?.bus.length && <div className="rounded-xl border border-dashed border-slate-800 p-8 text-center text-[10px] text-slate-600">Brak rozkładu — wczytaj plik CSV lub JSON poniżej.</div>}</div></div>
+              <div className="hd-card space-y-3 p-4 sm:p-5"><div><h2 className="text-sm font-semibold text-slate-200">Przystanek domowy</h2><p className="mt-1 text-[9px] text-slate-600">Kafelek na pulpicie pokazuje odjazdy z tego przystanku.</p></div><Field label="Przystanek"><AdminSelect value={data?.config.bus_stop || ""} onChange={(event) => void saveBusStop(event.target.value)}><option value="">— wybierz —</option>{busStops.map((stop) => <option key={stop} value={stop}>{stop}</option>)}</AdminSelect></Field><div className="flex items-center gap-2 rounded-lg bg-sky-300/[.04] p-2.5 text-[9px] text-slate-500"><Bus size={13} className="shrink-0 text-sky-200/70" /> Format CSV: linia,przystanek,kierunek,odjazd,dni (przecinek lub średnik).</div></div>
+            </div>
+            <div className="hd-card flex flex-wrap items-center gap-4 p-4 sm:p-5"><span className="grid h-10 w-10 place-items-center rounded-xl border border-sky-200/10 bg-sky-200/[.06] text-sky-100"><Upload size={17} /></span><div className="min-w-0 flex-1"><h2 className="text-[12px] font-semibold text-slate-200">Import rozkładu .csv / .json</h2><p className="mt-1 text-[9px] leading-relaxed text-slate-600">Dni: powszedni / pn-pt albo weekend / sb-nd. Duplikaty są pomijane.</p></div><label className="hd-button inline-flex min-h-9 cursor-pointer items-center gap-2 rounded-xl border border-sky-200/15 bg-sky-200/[.06] px-3 text-[10px] font-semibold text-sky-100 hover:bg-sky-200/10">{busy === "bus-import" ? <LoaderCircle size={13} className="animate-spin" /> : <Upload size={13} />}{busy === "bus-import" ? "Importuję…" : "Wybierz plik"}<input type="file" accept=".csv,.json,text/csv,application/json" disabled={!!busy} onChange={(event) => void importBus(event)} className="sr-only" /></label></div>
+          </div>}
+
           {activeTab === "documents" && <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,.72fr)]">
             <div className="hd-card p-4 sm:p-5"><div className="mb-4"><h2 className="text-sm font-semibold text-slate-200">Monitor ważności</h2><p className="mt-1 text-[9px] text-slate-600">Dashboard ostrzega na 30 dni przed końcem ważności.</p></div><div className="space-y-1.5">{[...(data?.documents || [])].sort((a, b) => new Date(a.expirationDate).getTime() - new Date(b.expirationDate).getTime()).map((document) => { const days = Math.ceil((new Date(document.expirationDate).getTime() - Date.now()) / 86_400_000); return <div key={document.id} className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 ${days <= 30 ? "border-rose-300/10 bg-rose-300/[.035]" : "border-slate-800/70 bg-white/[.02]"}`}><span className={`grid h-8 w-8 place-items-center rounded-xl ${days <= 30 ? "bg-rose-300/10 text-rose-200" : "bg-white/[.04] text-slate-400"}`}><FileText size={14} /></span><span className="min-w-0 flex-1"><span className="block truncate text-[10px] font-medium text-slate-200">{document.title}</span><span className="mt-0.5 block text-[9px] text-slate-600">{document.category} · {dateText(document.expirationDate)}</span></span><span className={`hidden text-[9px] sm:block ${days <= 30 ? "text-rose-200" : "text-slate-500"}`}>{days < 0 ? "wygasł" : days === 0 ? "dziś" : `${days} dni`}</span><button onClick={() => setDocumentForm({ id: document.id, title: document.title, category: document.category, expirationDate: localDateValue(document.expirationDate) })} className="rounded-lg p-1.5 text-slate-500 hover:text-emerald-100" title="Edytuj"><Pencil size={13} /></button><button onClick={() => void deleteItem("document-delete", document.id, "Dokument")} className="rounded-lg p-1.5 text-slate-600 hover:text-rose-200" title="Usuń"><Trash2 size={13} /></button></div>; })}{!data?.documents.length && <div className="rounded-xl border border-dashed border-slate-800 p-8 text-center text-[10px] text-slate-600">Dodaj pierwszy dokument do monitorowania.</div>}</div></div>
             <form onSubmit={(event) => void saveDocument(event)} className="hd-card space-y-3 p-4 sm:p-5"><div><h2 className="text-sm font-semibold text-slate-200">{documentForm.id ? "Edytuj przypomnienie" : "Nowe przypomnienie"}</h2><p className="mt-1 text-[9px] text-slate-600">Paszport, dowód, przegląd, ubezpieczenie…</p></div><Field label="Nazwa"><AdminInput required maxLength={100} value={documentForm.title} onChange={(event) => setDocumentForm({ ...documentForm, title: event.target.value })} placeholder="np. Dowód osobisty · Mama" /></Field><Field label="Kategoria"><AdminSelect value={documentForm.category} onChange={(event) => setDocumentForm({ ...documentForm, category: event.target.value })}><option value="DOKUMENT">Dokument</option><option value="AUTO">Samochód</option><option value="UBEZPIECZENIE">Ubezpieczenie</option><option value="ZDROWIE">Zdrowie</option><option value="INNE">Inne</option></AdminSelect></Field><Field label="Data ważności"><AdminInput required type="date" value={documentForm.expirationDate} onChange={(event) => setDocumentForm({ ...documentForm, expirationDate: event.target.value })} /></Field><div className="flex items-center gap-2 rounded-lg bg-rose-300/[.04] p-2.5 text-[9px] text-slate-500"><ShieldCheck size={13} className="shrink-0 text-rose-200/70" /> Alert pojawi się 30 dni przed terminem.</div><AdminButton type="submit" disabled={!!busy}><Save size={13} />{busy === "document-save" ? "Zapisuję…" : documentForm.id ? "Zapisz zmiany" : "Dodaj dokument"}</AdminButton>{documentForm.id && <button type="button" onClick={() => setDocumentForm({ id: "", title: "", category: "DOKUMENT", expirationDate: "" })} className="ml-2 text-[9px] text-slate-500 hover:text-slate-300">Anuluj</button>}</form>
@@ -390,7 +431,7 @@ export default function AdminPanel() {
           </div>}
 
           {activeTab === "settings" && <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,.75fr)]">
-            <form onSubmit={(event) => { event.preventDefault(); void perform("config-save", configForm, "Ustawienia domu zostały zapisane."); }} className="hd-card space-y-4 p-4 sm:p-5"><div><h2 className="text-sm font-semibold text-slate-200">Dom i rodzina</h2><p className="mt-1 text-[9px] text-slate-600">Lokalizacja pogody, członkowie rodziny i aktywacja głosowa.</p></div><Field label="Nazwa miejscowości"><AdminInput required maxLength={80} value={configForm.home_city} onChange={(event) => setConfigForm({ ...configForm, home_city: event.target.value })} placeholder="np. Warszawa" /></Field><div className="grid grid-cols-2 gap-3"><Field label="Szerokość geograficzna"><AdminInput required type="number" step="any" min="-90" max="90" value={configForm.city_lat} onChange={(event) => setConfigForm({ ...configForm, city_lat: event.target.value })} /></Field><Field label="Długość geograficzna"><AdminInput required type="number" step="any" min="-180" max="180" value={configForm.city_lon} onChange={(event) => setConfigForm({ ...configForm, city_lon: event.target.value })} /></Field></div><Field label="Głos lektora (Edge TTS)"><AdminSelect value={configForm.tts_voice} onChange={(event) => setConfigForm({ ...configForm, tts_voice: event.target.value })}><option value="pl-PL-ZofiaNeural">Zofia (kobiecy)</option><option value="pl-PL-MarekNeural">Marek (męski)</option></AdminSelect></Field><Field label="Twoje słowo wybudzające"><AdminInput required maxLength={48} value={configForm.wake_word} onChange={(event) => setConfigForm({ ...configForm, wake_word: event.target.value })} placeholder="Hej Dash" /></Field><div className="flex items-center gap-2 rounded-xl border border-sky-200/10 bg-sky-200/[.035] p-3 text-[9px] leading-relaxed text-slate-500"><MapPin size={14} className="shrink-0 text-sky-200" /> Pogoda pochodzi z Open‑Meteo. Zmień współrzędne, aby ustawić lokalizację domu.</div><AdminButton type="submit" disabled={!!busy}><Save size={13} />{busy === "config-save" ? "Zapisuję…" : "Zapisz ustawienia domu"}</AdminButton></form>
+            <form onSubmit={(event) => { event.preventDefault(); void perform("config-save", configForm, "Ustawienia domu zostały zapisane."); }} className="hd-card space-y-4 p-4 sm:p-5"><div><h2 className="text-sm font-semibold text-slate-200">Dom i rodzina</h2><p className="mt-1 text-[9px] text-slate-600">Lokalizacja pogody, członkowie rodziny i aktywacja głosowa.</p></div><Field label="Nazwa miejscowości"><AdminInput required maxLength={80} value={configForm.home_city} onChange={(event) => setConfigForm({ ...configForm, home_city: event.target.value })} placeholder="np. Warszawa" /></Field><div className="grid grid-cols-2 gap-3"><Field label="Szerokość geograficzna"><AdminInput required type="number" step="any" min="-90" max="90" value={configForm.city_lat} onChange={(event) => setConfigForm({ ...configForm, city_lat: event.target.value })} /></Field><Field label="Długość geograficzna"><AdminInput required type="number" step="any" min="-180" max="180" value={configForm.city_lon} onChange={(event) => setConfigForm({ ...configForm, city_lon: event.target.value })} /></Field></div><Field label="Głos lektora (Edge TTS)"><AdminSelect value={configForm.tts_voice} onChange={(event) => setConfigForm({ ...configForm, tts_voice: event.target.value })}><option value="pl-PL-ZofiaNeural">Zofia (kobiecy)</option><option value="pl-PL-MarekNeural">Marek (męski)</option></AdminSelect></Field><Field label="Twoje słowo wybudzające"><AdminInput required maxLength={48} value={configForm.wake_word} onChange={(event) => setConfigForm({ ...configForm, wake_word: event.target.value })} placeholder="Hej Dash" /></Field><div className="grid grid-cols-2 gap-3"><Field label="Alert o śmieciach (dzień przed)"><AdminInput required type="time" value={configForm.garbage_alert_hour} onChange={(event) => setConfigForm({ ...configForm, garbage_alert_hour: event.target.value })} /></Field><Field label="Odczyt alertów na głos"><AdminSelect value={configForm.alert_tts} onChange={(event) => setConfigForm({ ...configForm, alert_tts: event.target.value })}><option value="true">Tak, czytaj alerty</option><option value="false">Tylko dźwięk i tekst</option></AdminSelect></Field></div><div className="flex items-center gap-2 rounded-xl border border-sky-200/10 bg-sky-200/[.035] p-3 text-[9px] leading-relaxed text-slate-500"><MapPin size={14} className="shrink-0 text-sky-200" /> Pogoda pochodzi z Open‑Meteo. Zmień współrzędne, aby ustawić lokalizację domu.</div><AdminButton type="submit" disabled={!!busy}><Save size={13} />{busy === "config-save" ? "Zapisuję…" : "Zapisz ustawienia domu"}</AdminButton></form>
             <div className="space-y-4">
               <div className="hd-card space-y-3 p-4 sm:p-5">
                 <div><h2 className="text-sm font-semibold text-slate-200">Domownicy</h2><p className="mt-1 text-[9px] text-slate-600">Dzieci pojawiają się w planie lekcji, rodzice na listach zadań.</p></div>

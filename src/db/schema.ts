@@ -53,6 +53,16 @@ export const notes = sqliteTable("notes", {
   color: text("color").notNull().default("amber"),
   isPinned: integer("is_pinned", { mode: "boolean" }).notNull().default(true),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(now),
+  remindAt: integer("remind_at", { mode: "timestamp" }),
+});
+
+export const busSchedules = sqliteTable("bus_schedules", {
+  id: text("id").primaryKey().$defaultFn(uuid),
+  line: text("line").notNull(),
+  stopName: text("stop_name").notNull(),
+  direction: text("direction").notNull(),
+  departureTime: text("departure_time").notNull(),
+  dayType: text("day_type").notNull().default("WEEKDAY"),
 });
 
 export const systemConfig = sqliteTable("system_config", {

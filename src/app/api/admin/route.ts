@@ -5,6 +5,7 @@ import {
   garbageSchedules,
   timetable,
   workLogs,
+  busSchedules,
 } from "@/db/schema";
 import {
   getAdminPin,
@@ -14,6 +15,7 @@ import {
 } from "@/lib/dashboard-data";
 import { FRACTION_KEYS, importGarbageCalendar } from "@/lib/ics";
 import { parseTimetableJson } from "@/lib/timetable-json";
+import { parseBusSchedule } from "@/lib/bus-import";
 import { geocodeCity } from "@/lib/location";
 import { eq } from "drizzle-orm";
 
@@ -68,6 +70,10 @@ export async function POST(request: Request) {
       const latitude = Number(body.city_lat);
       const longitude = Number(body.city_lon);
       const ttsVoice = text(body.tts_voice, 40);
+      const alertHour = /^([01]\d|2[0-3]):([0-5]\d)$/.test(text(body.garbage_alert_hour, 5))
+        ? text(body.garbage_alert_hour, 5)
+        : "18:00";
+      const alertTts = text(body.alert_tts, 5) === "false" ? "false" : "true";
       if (!city || !wakeWord) return bad("Uzupełnij miejscowość i słowo wybudzające.");
       if (!Number.isFinite(latitude) || Math.abs(latitude) > 90) return bad("Nieprawidłowa szerokość geograficzna.");
       if (!Number.isFinite(longitude) || Math.abs(longitude) > 180) return bad("Nieprawidłowa długość geograficzna.");
@@ -87,6 +93,8 @@ export async function POST(request: Request) {
         city_lat: String(resolvedLat),
         city_lon: String(resolvedLon),
         tts_voice: voices.has(ttsVoice) ? ttsVoice : "pl-PL-ZofiaNeural",
+        garbage_alert_hour: alertHour,
+        alert_tts: alertTts,
       });
       return Response.json({ ok: true });
     }
@@ -246,6 +254,55 @@ export async function POST(request: Request) {
       } catch (error) {
         return bad(error instanceof Error ? error.message : "Nie udało się odczytać pliku ICS.");
       }
+    }
+
+    if (action === "bus-import") {
+      const content = text(body.content, 500_000);
+      let parsed;
+      try {
+        parsed = parseBusSchedule(content);
+      } catch (error) {
+        return bad(error instanceof Error ? error.message : "Nie udało się odczytać rozkładu jazdy.");
+      }
+      const existing = await db
+        .select({
+          line: busSchedules.line,
+          stopName: busSchedules.stopName,
+          direction: busSchedules.direction,
+          departureTime: busSchedules.departureTime,
+          dayType: busSchedules.dayType,
+        })
+        .from(busSchedules)
+        .all();
+      const seen = new Set(
+        existing.map((row) => `${row.line}¦${row.stopName}¦${row.direction}¦${row.departureTime}¦${row.dayType}`),
+      );
+      const additions = parsed.rows.filter((row) => {
+        const key = `${row.line}¦${row.stopName}¦${row.direction}¦${row.departureTime}¦${row.dayType}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      if (additions.length > 0) await db.insert(busSchedules).values(additions).run();
+      return Response.json({
+        ok: true,
+        imported: additions.length,
+        detected: parsed.rows.length,
+        stops: parsed.stops,
+        warnings: parsed.warnings,
+      });
+    }
+
+    if (action === "bus-delete") {
+      if (typeof body.id !== "string") return bad("Brak identyfikatora odjazdu.");
+      await db.delete(busSchedules).where(eq(busSchedules.id, body.id)).run();
+      return Response.json({ ok: true });
+    }
+
+    if (action === "bus-stop-save") {
+      const stopName = text(body.stopName, 80);
+      await setConfigValues({ bus_stop: stopName });
+      return Response.json({ ok: true });
     }
 
     if (action === "setup-reopen") {

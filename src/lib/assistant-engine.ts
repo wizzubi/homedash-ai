@@ -3,7 +3,7 @@ import { tool, type ToolSet } from "ai";
 import { eq, lte } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
-import { documentReminders, garbageSchedules, notes, tasks, timetable, workLogs } from "@/db/schema";
+import { busSchedules, documentReminders, garbageSchedules, notes, systemConfig, tasks, timetable, workLogs } from "@/db/schema";
 import { ensureSchema } from "@/db/migrate";
 import {
   OPENROUTER_FALLBACK_MODEL,
@@ -694,6 +694,55 @@ async function answerLessonFromDb(
 }
 
 /**
+ * Serwerowa odpowiedź o odjazdach z bazy — przystanek z frazy, z konfigu
+ * (`bus_stop`) albo pierwszy z listy.
+ */
+async function answerBusFromDb(stopFragment: string | null): Promise<string | null> {
+  try {
+    await ensureSchema();
+    const rows = await db.select().from(busSchedules);
+    if (rows.length === 0) {
+      return "Brak rozkładu jazdy. Wczytaj plik CSV lub JSON w panelu administratora (zakładka Autobus).";
+    }
+    const stops = [...new Set(rows.map((row) => row.stopName))];
+    const needle = (stopFragment || "").toLocaleLowerCase("pl-PL");
+    const configRows = await db.select().from(systemConfig);
+    const configured = (configRows.find((row) => row.key === "bus_stop")?.value || "").trim();
+    const stop =
+      stops.find((name) => name.toLocaleLowerCase("pl-PL") === needle) ??
+      stops.find((name) => needle.length >= 3 && name.toLocaleLowerCase("pl-PL").includes(needle)) ??
+      (configured && stops.includes(configured) ? configured : null) ??
+      stops[0];
+    if (!stop) return "Brak rozkładu jazdy.";
+
+    const now = new Date();
+    const dayType = now.getDay() === 0 || now.getDay() === 6 ? "WEEKEND" : "WEEKDAY";
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const upcoming = rows
+      .filter((row) => row.stopName === stop && row.dayType === dayType)
+      .map((row) => {
+        const [hours, minutes] = row.departureTime.split(":").map(Number);
+        return { row, inMinutes: hours * 60 + minutes - nowMinutes };
+      })
+      .filter((entry) => entry.inMinutes >= -2)
+      .sort((a, b) => a.inMinutes - b.inMinutes)
+      .slice(0, 3);
+    if (upcoming.length === 0) return `Dziś nie ma już odjazdów z przystanku ${stop}.`;
+    const list = upcoming
+      .map(({ row, inMinutes }) =>
+        inMinutes <= 1
+          ? `linia ${row.line} (${row.direction}) — już`
+          : `linia ${row.line} (${row.direction}) o ${row.departureTime} (za ${inMinutes} min)`,
+      )
+      .join("; ");
+    return `Najbliższe odjazdy · ${stop}: ${list}.`;
+  } catch (error) {
+    console.error("bus read failed", error);
+    return null;
+  }
+}
+
+/**
  * Deterministyczny fallback: gdy model AI jest niedostępny (limit zapytań,
  * guardrail, brak klucza), proste komendy domowe są obsługiwane lokalnie,
  * tak aby zapis do bazy zawsze się powiódł.
@@ -768,6 +817,11 @@ export async function runLocalCommand(
     case "volumeUp":
     case "volumeDown": {
       // Dźwięk żyje w przeglądarce — serwer go nie obsłuży (klient tak).
+      return null;
+    }
+    case "busQuery": {
+      const reply = await answerBusFromDb(intent.stop);
+      if (reply) return { reply: `⚡ ${reply}`, mutated: false };
       return null;
     }
   }

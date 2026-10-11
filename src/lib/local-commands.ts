@@ -31,9 +31,10 @@ export type LocalIntent =
   | { kind: "volumeDown" }
   | { kind: "lessonEnd"; child: string | null; day: LessonDay }
   | { kind: "lessonCount"; child: string | null; day: LessonDay }
-  | { kind: "lessonPlan"; child: string | null; day: LessonDay };
+  | { kind: "lessonPlan"; child: string | null; day: LessonDay }
+  | { kind: "busQuery"; stop: string | null };
 
-export type LocalSource = "local-task" | "local-work" | "local-waste" | "local-note" | "local-radio" | "local-lessons";
+export type LocalSource = "local-task" | "local-work" | "local-waste" | "local-note" | "local-radio" | "local-lessons" | "local-bus";
 
 const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -305,6 +306,14 @@ export function parseLocalCommand(raw: string): LocalIntent | null {
     }
   }
 
+  // 8. Autobusy („kiedy autobus”, „o której odjeżdża”, „rozkład jazdy”).
+  if (/autobus|odjazd|rozkład\s+jazdy|rozklad\s+jazdy|przystan|mpk|zkm|tramwaj/.test(t)) {
+    const stopMatch = text.match(/(?:z|ze|na|przystan(?:ek|ku))\s+([\p{L}\p{N}][\p{L}\p{N} .\-]{1,60})/iu);
+    const stop = stopMatch?.[1]?.trim().replace(/[,.:;]+$/, "") || null;
+    // „z” jako przyimek samotny to za mało — wymagaj min. 3 znaków nazwy.
+    return { kind: "busQuery", stop: stop && stop.length >= 3 ? stop.slice(0, 60) : null };
+  }
+
   return null;
 }
 
@@ -330,6 +339,8 @@ export function intentSource(intent: LocalIntent): LocalSource {
     case "lessonCount":
     case "lessonPlan":
       return "local-lessons";
+    case "busQuery":
+      return "local-bus";
   }
 }
 

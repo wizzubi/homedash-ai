@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   Activity,
   ArrowRight,
+  Bus,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -65,6 +66,8 @@ import {
 import { parseLocalCommand } from "@/lib/local-commands";
 import { RADIO_STATIONS } from "@/lib/radio-stations";
 import { useRadioPlayer, emitRadioCommand } from "@/hooks/useRadioPlayer";
+import { useAlertScheduler, type AlertFire } from "@/hooks/useAlertScheduler";
+import { playAlertSound } from "@/lib/sound-alerts";
 import { cleanSpeechText } from "@/lib/clean-speech-text";
 import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 
@@ -87,7 +90,8 @@ type WorkLog = {
 type GarbageItem = { id: string; fraction: string; pickupDate: string };
 type DocumentItem = { id: string; title: string; category: string; expirationDate: string };
 type Lesson = { id: string; childName: string; dayOfWeek: number; startTime: string; endTime: string; subject: string; classroom: string | null };
-type NoteItem = { id: string; title: string | null; content: string; color: string; isPinned: boolean; createdAt: string };
+type NoteItem = { id: string; title: string | null; content: string; color: string; isPinned: boolean; createdAt: string; remindAt: string | null };
+type BusItem = { id: string; line: string; stopName: string; direction: string; departureTime: string; dayType: string };
 type FamilyMember = { name: string; role: "parent" | "child" };
 type DashboardData = {
   tasks: TaskItem[];
@@ -96,6 +100,7 @@ type DashboardData = {
   documents: DocumentItem[];
   timetable: Lesson[];
   notes: NoteItem[];
+  bus: BusItem[];
   config: Record<string, string>;
   family?: FamilyMember[];
   setupCompleted?: boolean;
@@ -135,7 +140,7 @@ type SpeechRecognitionWindow = Window & {
 };
 
 const EMPTY_DASHBOARD: DashboardData = {
-  tasks: [], workLogs: [], garbage: [], documents: [], timetable: [], notes: [], config: {},
+  tasks: [], workLogs: [], garbage: [], documents: [], timetable: [], notes: [], bus: [], config: {},
 };
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -221,16 +226,16 @@ const TOOL_LABELS: Record<string, string> = {
 type TileId =
   | "weather" | "waste" | "stats" | "music"
   | "school" | "work"
-  | "tasks" | "notes" | "documents" | "assistant";
+  | "tasks" | "notes" | "documents" | "assistant" | "bus";
 type StackId = "left" | "center" | "right";
 const STACKS: StackId[] = ["left", "center", "right"];
-const ALL_TILES: TileId[] = ["weather", "waste", "stats", "music", "school", "work", "tasks", "notes", "documents", "assistant"];
+const ALL_TILES: TileId[] = ["weather", "waste", "stats", "music", "school", "work", "tasks", "notes", "documents", "assistant", "bus"];
 
 function defaultTileOrder(): Record<StackId, TileId[]> {
   return {
     left: ["weather", "waste", "stats", "music"],
     center: ["school", "work"],
-    right: ["tasks", "notes", "documents", "assistant"],
+    right: ["tasks", "notes", "documents", "assistant", "bus"],
   };
 }
 
@@ -582,10 +587,36 @@ export default function HomeDashboard() {
     await refreshDashboard();
   }, [refreshDashboard]);
 
-  const createNote = useCallback(async (entry: { title?: string; content: string; color: string }) => {
+  const createNote = useCallback(async (entry: { title?: string; content: string; color: string; remindAt?: string | null }) => {
     await requestJson<NoteItem>("/api/notes", { method: "POST", body: JSON.stringify(entry) });
     await refreshDashboard();
   }, [refreshDashboard]);
+
+  // Dźwiękowe alerty: śmieci dzień przed, zadania z terminem dziś, notatki z remind_at.
+  const handleAlertFire = useCallback(async (alert: AlertFire) => {
+    playAlertSound(alert.sound);
+    notify(alert.body);
+    if ((dashboard.config.alert_tts ?? "true") !== "false") {
+      void playSpeech(alert.speak ?? alert.body);
+    }
+    if (alert.kind === "note") {
+      // Przypomnienie skonsumowane — czyścimy, żeby nie wracało po restarcie.
+      const id = alert.key.replace(/^note:/, "");
+      try {
+        await requestJson("/api/notes", { method: "PATCH", body: JSON.stringify({ id, remindAt: null }) });
+        void refreshDashboard();
+      } catch {
+        /* przypomnienie i tak wygasa po 90 s */
+      }
+    }
+  }, [dashboard.config.alert_tts, notify, playSpeech, refreshDashboard]);
+
+  useAlertScheduler(
+    dataReady
+      ? { garbage: dashboard.garbage, tasks: dashboard.tasks, notes: dashboard.notes, config: dashboard.config }
+      : null,
+    handleAlertFire,
+  );
 
   const askAssistant = useCallback(async (question: string) => {
     const clean = question.trim();
@@ -862,13 +893,52 @@ export default function HomeDashboard() {
           pushLocal(`⚡ Plan lekcji — ${child} ${dayLabel}: ${plan}.`);
           return;
         }
+        case "busQuery": {
+          const reference = now ?? new Date();
+          const iso = isoWeekday(reference);
+          const dayType = iso > 5 ? "WEEKEND" : "WEEKDAY";
+          const stops = [...new Set(dashboard.bus.map((item) => item.stopName))];
+          const configured = (dashboard.config.bus_stop || "").trim();
+          const needle = (intent.stop || "").toLocaleLowerCase("pl-PL");
+          const stop =
+            stops.find((name) => name.toLocaleLowerCase("pl-PL") === needle) ??
+            stops.find((name) => needle && name.toLocaleLowerCase("pl-PL").includes(needle)) ??
+            (configured && stops.includes(configured) ? configured : null) ??
+            stops[0] ??
+            null;
+          if (!stop) {
+            pushLocal("⚡ Brak rozkładu jazdy. Wczytaj plik CSV lub JSON w panelu administratora (zakładka Autobus).");
+            return;
+          }
+          const nowMinutes = reference.getHours() * 60 + reference.getMinutes();
+          const upcoming = dashboard.bus
+            .filter((item) => item.stopName === stop && item.dayType === dayType)
+            .map((item) => {
+              const [hours, minutes] = item.departureTime.split(":").map(Number);
+              return { item, inMinutes: hours * 60 + minutes - nowMinutes };
+            })
+            .filter((entry) => entry.inMinutes >= -2)
+            .sort((a, b) => a.inMinutes - b.inMinutes)
+            .slice(0, 3);
+          if (upcoming.length === 0) {
+            pushLocal(`⚡ Dziś nie ma już odjazdów z przystanku ${stop}.`);
+            return;
+          }
+          const list = upcoming
+            .map(({ item, inMinutes }) =>
+              inMinutes <= 1 ? `linia ${item.line} (${item.direction}) — już/jeszcze chwilę` : `linia ${item.line} (${item.direction}) o ${item.departureTime} (za ${inMinutes} min)`,
+            )
+            .join("; ");
+          pushLocal(`⚡ Najbliższe odjazdy · ${stop}: ${list}.`);
+          return;
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Nie udało się wykonać polecenia.";
       setMessages((previous) => [...previous, { role: "assistant", content: message, source: "error" }]);
       notify(message);
     }
-  }, [askAssistant, assistantBusy, createNote, createTask, createWorkLog, dashboard.family, dashboard.garbage, dashboard.tasks, dashboard.timetable, dashboard.workLogs, notify, now, playSpeech, refreshDashboard]);
+  }, [askAssistant, assistantBusy, createNote, createTask, createWorkLog, dashboard.bus, dashboard.config, dashboard.family, dashboard.garbage, dashboard.tasks, dashboard.timetable, dashboard.workLogs, notify, now, playSpeech, refreshDashboard]);
 
   useEffect(() => { handleUserCommandRef.current = handleUserCommand; }, [handleUserCommand]);
 
@@ -1089,8 +1159,10 @@ export default function HomeDashboard() {
       } else if (composer === "note") {
         const content = String(values.get("content") ?? "").trim();
         if (!content) return;
-        await createNote({ title: String(values.get("title") ?? ""), content, color: String(values.get("color") ?? "amber") });
-        notify("Notatka przypięta na tablicy.");
+        const remindRaw = String(values.get("remindAt") ?? "").trim();
+        const remindAt = remindRaw ? new Date(remindRaw).toISOString() : null;
+        await createNote({ title: String(values.get("title") ?? ""), content, color: String(values.get("color") ?? "amber"), remindAt });
+        notify(remindAt ? "Notatka przypięta — przypomnę o czasie." : "Notatka przypięta na tablicy.");
       } else {
         const startTime = String(values.get("startTime") ?? "");
         const endTime = String(values.get("endTime") ?? "");
@@ -1119,6 +1191,30 @@ export default function HomeDashboard() {
       .filter((item) => item.fraction === fraction && daysUntil(item.pickupDate, currentTime) >= 0)
       .sort((a, b) => new Date(a.pickupDate).getTime() - new Date(b.pickupDate).getTime())[0];
   }
+
+  // Najbliższe odjazdy na kafel autobusowy (przystanek z konfigu lub pierwszy).
+  const busStops = useMemo(
+    () => [...new Set(dashboard.bus.map((item) => item.stopName))].sort((a, b) => a.localeCompare(b, "pl-PL")),
+    [dashboard.bus],
+  );
+  const busStop = (dashboard.config.bus_stop || "").trim() && busStops.includes((dashboard.config.bus_stop || "").trim())
+    ? (dashboard.config.bus_stop || "").trim()
+    : (busStops[0] ?? "");
+  const busUpcoming = useMemo(() => {
+    if (!busStop) return [];
+    const reference = now ?? new Date();
+    const dayType = isoWeekday(reference) > 5 ? "WEEKEND" : "WEEKDAY";
+    const nowMinutes = reference.getHours() * 60 + reference.getMinutes();
+    return dashboard.bus
+      .filter((item) => item.stopName === busStop && item.dayType === dayType)
+      .map((item) => {
+        const [hours, minutes] = item.departureTime.split(":").map(Number);
+        return { item, inMinutes: hours * 60 + minutes - nowMinutes };
+      })
+      .filter((entry) => entry.inMinutes >= -2)
+      .sort((a, b) => a.inMinutes - b.inMinutes)
+      .slice(0, 4);
+  }, [dashboard.bus, busStop, now]);
 
   // Kafelki jako węzły (domknięcia nad stanem) — pozycję nadaje tileOrder.
   const tileNodes: Record<TileId, ReactNode> = {
@@ -1422,7 +1518,8 @@ export default function HomeDashboard() {
             return (
               <div key={note.id} className={`group relative rounded-xl border px-2.5 py-2 ${colors[note.color] || colors.amber}`}>
                 <div className="flex items-center gap-1.5 pr-10"><span className="truncate text-[9px] font-semibold text-slate-200">{note.title || "Notatka"}</span><span className="ml-auto shrink-0 text-[8px] text-slate-600">{new Date(note.createdAt).toLocaleDateString("pl-PL", { day: "numeric", month: "short" })}</span></div>
-                <p className="mt-1 line-clamp-2 text-[9px] leading-[1.45] text-slate-400">{note.content}</p>
+                    <p className="mt-1 line-clamp-2 text-[9px] leading-[1.45] text-slate-400">{note.content}</p>
+                    {note.remindAt && <p className="mt-1 flex items-center gap-1 text-[8px] font-medium text-amber-200/80">⏰ {new Date(note.remindAt).toLocaleDateString("pl-PL", { day: "numeric", month: "short" })} {new Date(note.remindAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}</p>}
                 <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
                   <button onClick={() => void toggleNotePin(note)} className="rounded-md p-1 text-slate-500 hover:bg-white/10 hover:text-amber-100" title={note.isPinned ? "Odepnij" : "Przypnij"}><Pin size={10} /></button>
                   <button onClick={() => void removeNote(note)} className="rounded-md p-1 text-slate-500 hover:bg-rose-300/10 hover:text-rose-200" title="Usuń notatkę"><X size={10} /></button>
@@ -1463,6 +1560,35 @@ export default function HomeDashboard() {
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-emerald-200/10 bg-emerald-200/[.055] text-emerald-100 transition group-hover:bg-emerald-200/[.11]"><MessageCircle size={15} /></span>
         </button>
         <p className="mt-2 shrink-0 border-t border-white/[.055] pt-2 text-[8px] text-slate-600">Powiedz <b className="font-medium text-slate-400">„{wakeWord}”</b>, aby rozpocząć.</p>
+      </GlassCard>
+    ),
+    bus: (
+      <GlassCard delay={0.24} className="bus-card hd-glow-blue">
+        <SectionHeading icon={Bus} label="Autobus · odjazdy" accent="text-sky-300" action={<Link href="/admin" className="rounded-lg p-1 text-slate-600 transition hover:bg-white/5 hover:text-slate-300" title="Zarządzaj rozkładem"><ArrowRight size={13} /></Link>} />
+        <div className="mb-2 flex shrink-0 items-center gap-1.5 text-[9px] text-slate-500"><MapPin size={11} className="text-sky-200/70" /><span className="truncate">{busStop || "Brak przystanku"}</span></div>
+        <div className="hd-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5">
+          {!dataReady ? (
+            <p className="py-3 text-center text-[10px] text-slate-600">Sprawdzam odjazdy…</p>
+          ) : !busStop ? (
+            <div className="grid h-full min-h-[58px] place-items-center rounded-xl border border-dashed border-slate-800/80 px-4 text-center text-[10px] text-slate-500">Wczytaj rozkład w panelu administratora.</div>
+          ) : busUpcoming.length === 0 ? (
+            <div className="grid h-full min-h-[58px] place-items-center rounded-xl border border-dashed border-slate-800/80 px-4 text-center text-[10px] text-slate-500">Dziś nie ma już odjazdów z tego przystanku.</div>
+          ) : (
+            busUpcoming.map(({ item, inMinutes }) => (
+              <div key={item.id} className={`flex items-center gap-2.5 rounded-xl border px-2.5 py-1.5 ${inMinutes <= 5 ? "border-emerald-200/15 bg-emerald-200/[.05]" : "border-transparent bg-white/[.025]"}`}>
+                <span className="grid h-7 min-w-7 shrink-0 place-items-center rounded-lg bg-sky-300/[.08] px-1 font-mono text-[11px] font-bold text-sky-100">{item.line}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[10px] font-medium text-slate-200">→ {item.direction}</span>
+                  <span className="mt-0.5 block font-mono text-[9px] tabular-nums text-slate-500">{item.departureTime}</span>
+                </span>
+                <span className={`shrink-0 text-[10px] font-semibold tabular-nums ${inMinutes <= 5 ? "text-emerald-200" : "text-slate-400"}`}>
+                  {inMinutes <= 1 ? "już" : `za ${inMinutes} min`}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+        <button onClick={() => void handleUserCommand("kiedy autobus")} className="mt-2 flex shrink-0 items-center gap-1.5 border-t border-white/[.05] pt-2 text-[9px] font-medium text-slate-500 transition hover:text-sky-100"><Bus size={12} /> Zapytaj o odjazdy głosowo</button>
       </GlassCard>
     ),
   };
@@ -1596,6 +1722,7 @@ export default function HomeDashboard() {
                   <label className="block text-[10px] font-medium text-slate-400">Tytuł<input autoFocus name="title" maxLength={80} placeholder="np. Dziś pamiętaj" className="hd-input mt-1.5 h-11 px-3 text-sm" /></label>
                   <label className="block text-[10px] font-medium text-slate-400">Wiadomość<textarea name="content" required rows={3} maxLength={360} placeholder="Ważna myśl dla całej rodziny…" className="hd-input mt-1.5 resize-none px-3 py-2.5 text-sm" /></label>
                   <label className="block text-[10px] font-medium text-slate-400">Kolor przypinki<select name="color" className="hd-input mt-1.5 h-11 px-3 text-sm"><option value="amber">Słoneczny bursztyn</option><option value="mint">Miętowy</option><option value="sky">Błękitny</option><option value="violet">Lawendowy</option><option value="rose">Różowy</option></select></label>
+                  <label className="block text-[10px] font-medium text-slate-400">Przypomnij (opcjonalnie)<input name="remindAt" type="datetime-local" className="hd-input mt-1.5 h-11 px-3 text-sm" /></label>
                 </>}
                 {composer === "work" && <>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><label className="text-[10px] font-medium text-slate-400">Ile godzin<input name="hours" type="number" step="0.25" min="0.25" max="24" placeholder="8" className="hd-input mt-1.5 h-11 px-3 text-sm" /></label><div className="flex items-end pb-3 text-[9px] text-slate-600">albo uzupełnij godziny obok →</div></div>

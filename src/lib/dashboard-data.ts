@@ -1,6 +1,7 @@
 import { db, databaseTarget } from "@/db";
 import { ensureSchema } from "@/db/migrate";
 import {
+  busSchedules,
   documentReminders,
   garbageSchedules,
   notes,
@@ -22,6 +23,9 @@ export const CONFIG_KEYS = [
   "tts_voice",
   "family_members",
   "admin_pin",
+  "garbage_alert_hour",
+  "alert_tts",
+  "bus_stop",
 ] as const;
 
 const SECRET_CONFIG_KEYS = new Set<string>(["admin_pin"]);
@@ -100,13 +104,14 @@ export async function getAdminPin() {
  */
 export async function getDashboardData() {
   await ensureSchema();
-  const [taskRows, workRows, wasteRows, documentRows, lessonRows, noteRows] = await Promise.all([
+  const [taskRows, workRows, wasteRows, documentRows, lessonRows, noteRows, busRows] = await Promise.all([
     db.select().from(tasks).orderBy(asc(tasks.isCompleted), asc(tasks.dueDate), desc(tasks.createdAt)).all(),
     db.select().from(workLogs).orderBy(desc(workLogs.date)).all(),
     db.select().from(garbageSchedules).orderBy(asc(garbageSchedules.pickupDate)).all(),
     db.select().from(documentReminders).orderBy(asc(documentReminders.expirationDate)).all(),
     db.select().from(timetable).orderBy(asc(timetable.dayOfWeek), asc(timetable.startTime)).all(),
     db.select().from(notes).orderBy(desc(notes.isPinned), desc(notes.createdAt)).all(),
+    db.select().from(busSchedules).orderBy(asc(busSchedules.stopName), asc(busSchedules.departureTime)).all(),
   ]);
   const config = await getConfig();
 
@@ -117,6 +122,7 @@ export async function getDashboardData() {
     documents: documentRows,
     timetable: lessonRows,
     notes: noteRows,
+    bus: busRows,
     config: getPublicConfig(config),
     family: parseFamilyMembers(config.family_members),
     setupCompleted: config.setup_completed === "true",

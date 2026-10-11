@@ -6,10 +6,18 @@ import { eq } from "drizzle-orm";
 export const dynamic = "force-dynamic";
 const noteColors = new Set(["amber", "violet", "mint", "sky", "rose"]);
 
+function parseRemindAt(value: unknown): Date | null | undefined {
+  // undefined = nie podano (bez zmian), null = wyczyść przypomnienie.
+  if (value === undefined || value === null || value === "") return value === null ? null : undefined;
+  if (typeof value !== "string") return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
 export async function POST(request: Request) {
   try {
     await ensureSchema();
-    const body = (await request.json()) as { title?: unknown; content?: unknown; color?: unknown };
+    const body = (await request.json()) as { title?: unknown; content?: unknown; color?: unknown; remindAt?: unknown };
     const content = typeof body.content === "string" ? body.content.trim().slice(0, 360) : "";
     if (!content) return Response.json({ error: "Notatka nie może być pusta." }, { status: 400 });
     const [note] = await db
@@ -19,6 +27,7 @@ export async function POST(request: Request) {
         content,
         color: typeof body.color === "string" && noteColors.has(body.color) ? body.color : "amber",
         isPinned: true,
+        remindAt: parseRemindAt(body.remindAt) ?? null,
       })
       .returning();
     return Response.json(note, { status: 201 });
@@ -37,6 +46,7 @@ export async function PATCH(request: Request) {
       content?: unknown;
       color?: unknown;
       isPinned?: unknown;
+      remindAt?: unknown;
     };
     if (typeof body.id !== "string") return Response.json({ error: "Brak identyfikatora notatki." }, { status: 400 });
     const updates: Partial<typeof notes.$inferInsert> = {};
@@ -44,6 +54,8 @@ export async function PATCH(request: Request) {
     if (typeof body.content === "string" && body.content.trim()) updates.content = body.content.trim().slice(0, 360);
     if (typeof body.color === "string" && noteColors.has(body.color)) updates.color = body.color;
     if (typeof body.isPinned === "boolean") updates.isPinned = body.isPinned;
+    const remindAt = parseRemindAt(body.remindAt);
+    if (remindAt !== undefined) updates.remindAt = remindAt;
     const [note] = await db.update(notes).set(updates).where(eq(notes.id, body.id)).returning();
     if (!note) return Response.json({ error: "Nie znaleziono notatki." }, { status: 404 });
     return Response.json(note);

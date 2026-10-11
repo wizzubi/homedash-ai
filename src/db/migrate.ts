@@ -52,7 +52,16 @@ const DDL = [
     content text NOT NULL,
     color text NOT NULL DEFAULT 'amber',
     is_pinned integer NOT NULL DEFAULT 1,
-    created_at integer NOT NULL
+    created_at integer NOT NULL,
+    remind_at integer
+  )`,
+  `CREATE TABLE IF NOT EXISTS bus_schedules (
+    id text PRIMARY KEY NOT NULL,
+    line text NOT NULL,
+    stop_name text NOT NULL,
+    direction text NOT NULL,
+    departure_time text NOT NULL,
+    day_type text NOT NULL DEFAULT 'WEEKDAY'
   )`,
   `CREATE TABLE IF NOT EXISTS system_config (
     key text PRIMARY KEY NOT NULL,
@@ -63,14 +72,28 @@ const DDL = [
   `CREATE INDEX IF NOT EXISTS garbage_pickup_date_idx ON garbage_schedules (pickup_date)`,
   `CREATE INDEX IF NOT EXISTS document_expiration_idx ON document_reminders (expiration_date)`,
   `CREATE INDEX IF NOT EXISTS timetable_child_day_idx ON timetable (child_name, day_of_week)`,
+  `CREATE INDEX IF NOT EXISTS bus_stop_time_idx ON bus_schedules (stop_name, day_type, departure_time)`,
 ];
 
 let schemaPromise: Promise<void> | null = null;
+
+async function ensureAddedColumns() {
+  // Istniejące bazy (sprzed kolumny remind_at): SQLite nie ma ADD COLUMN IF NOT EXISTS.
+  // UWAGA: indeks na remind_at musi powstać DOPIERO po kolumnie — inaczej cała
+  // migracja wysypuje się z "no such column" przy każdym żądaniu.
+  const notesInfo = await client.execute(`PRAGMA table_info(notes)`);
+  const noteColumns = new Set(notesInfo.rows.map((row) => String((row as { name?: unknown }).name ?? "")));
+  if (!noteColumns.has("remind_at")) {
+    await client.execute(`ALTER TABLE notes ADD COLUMN remind_at integer`);
+  }
+  await client.execute(`CREATE INDEX IF NOT EXISTS notes_remind_at_idx ON notes (remind_at)`);
+}
 
 export function ensureSchema(): Promise<void> {
   if (!schemaPromise) {
     schemaPromise = (async () => {
       for (const statement of DDL) await client.execute(statement);
+      await ensureAddedColumns();
     })().catch((error) => {
       schemaPromise = null;
       throw error;
