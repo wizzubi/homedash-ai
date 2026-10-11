@@ -553,6 +553,9 @@ export default function HomeDashboard() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: spoken, voice: ttsVoice }),
+        // Zawieszona synteza nie może blokować lektora w nieskończoność —
+        // po 20 s przechodzimy na lokalny speechSynthesis.
+        signal: AbortSignal.timeout(20_000),
       });
       if (!response.ok) throw new Error("Edge TTS niedostępne");
       const audioUrl = URL.createObjectURL(await response.blob());
