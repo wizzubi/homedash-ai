@@ -1069,16 +1069,32 @@ export default function HomeDashboard() {
   const nextLesson = viewingToday
     ? viewedLessons.find((lesson) => minutesOfDay(lesson.startTime) > nowMinutes)
     : undefined;
-  // Karta godzin podąża za przeglądanym dniem (wspólny dayOffset z planem lekcji).
-  const viewedDayLogs = dashboard.workLogs.filter((log) => dateKey(log.date) === dateKey(viewedDate));
+  // Karta godzin ma WŁASNY przeglądany dzień (niezależny od planu lekcji).
+  const [workDayOffset, setWorkDayOffset] = useState(0);
+  const [workSlideDir, setWorkSlideDir] = useState(0);
+  const workViewingToday = workDayOffset === 0;
+  const workViewedDate = useMemo(() => {
+    const date = new Date(now ?? new Date());
+    date.setDate(date.getDate() + workDayOffset);
+    return date;
+  }, [now, workDayOffset]);
+  const stepWorkDay = useCallback((delta: number) => {
+    setWorkSlideDir(delta > 0 ? 1 : -1);
+    setWorkDayOffset((previous) => Math.max(-30, Math.min(30, previous + delta)));
+  }, []);
+  const resetWorkDay = useCallback(() => {
+    setWorkSlideDir(0);
+    setWorkDayOffset(0);
+  }, []);
+  const viewedDayLogs = dashboard.workLogs.filter((log) => dateKey(log.date) === dateKey(workViewedDate));
   const viewedDayHours = viewedDayLogs.reduce((sum, log) => sum + log.hours, 0);
-  const workDayLabel = dayOffset === 0
+  const workDayLabel = workDayOffset === 0
     ? "dzisiaj"
-    : dayOffset === 1
+    : workDayOffset === 1
       ? "jutro"
-      : dayOffset === -1
+      : workDayOffset === -1
         ? "wczoraj"
-        : viewedDate.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "numeric" });
+        : workViewedDate.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "numeric" });
   const entriesLabel = viewedDayLogs.length === 1
     ? "1 wpis"
     : viewedDayLogs.length % 10 >= 2 && viewedDayLogs.length % 10 <= 4 && (viewedDayLogs.length % 100 < 12 || viewedDayLogs.length % 100 > 14)
@@ -1494,27 +1510,27 @@ export default function HomeDashboard() {
         delay={0.14}
         className="work-card hd-glow-mint"
         onTouchStart={(event) => { workTouchX.current = event.touches[0].clientX; }}
-        onTouchEnd={(event) => {
-          if (workTouchX.current === null) return;
-          const dx = event.changedTouches[0].clientX - workTouchX.current;
-          workTouchX.current = null;
-          if (Math.abs(dx) < 48) return;
-          stepScheduleDay(dx < 0 ? 1 : -1);
-        }}
+            onTouchEnd={(event) => {
+              if (workTouchX.current === null) return;
+              const dx = event.changedTouches[0].clientX - workTouchX.current;
+              workTouchX.current = null;
+              if (Math.abs(dx) < 48) return;
+              stepWorkDay(dx < 0 ? 1 : -1);
+            }}
       >
         <div className="mb-1 flex shrink-0 items-start justify-between gap-2">
           <div className="min-w-0">
             <div className="flex items-center gap-2"><span className="grid h-7 w-7 place-items-center rounded-[10px] bg-emerald-300/[.08] text-emerald-200"><Activity size={15} /></span><span className="hd-overline">Godziny pracy</span></div>
-            <motion.div key={dateKey(viewedDate)} initial={{ opacity: 0, x: slideDir === 0 ? 0 : 12 * slideDir }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2, ease: "easeOut" }} className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <motion.div key={dateKey(workViewedDate)} initial={{ opacity: 0, x: workSlideDir === 0 ? 0 : 12 * workSlideDir }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2, ease: "easeOut" }} className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
               <span className="text-[clamp(1.8rem,3vw,2.5rem)] font-light leading-none tracking-[-.075em] text-slate-50">{formatHours(viewedDayHours)}<span className="ml-1 text-sm text-slate-400">h</span></span>
               <span className="text-[9px] text-slate-500">{workDayLabel}{viewedDayLogs.length > 0 && ` · ${entriesLabel}`}</span>
-              {!viewingToday && <button onClick={resetScheduleDay} className="hd-button rounded-full border border-emerald-200/20 bg-emerald-200/[.07] px-2 py-0.5 text-[8px] font-semibold text-emerald-100 transition hover:bg-emerald-200/[.14]">Dziś</button>}
+                  {!workViewingToday && <button onClick={resetWorkDay} className="hd-button rounded-full border border-emerald-200/20 bg-emerald-200/[.07] px-2 py-0.5 text-[8px] font-semibold text-emerald-100 transition hover:bg-emerald-200/[.14]">Dziś</button>}
               {viewedDayHours > 0 && <span className="flex items-center gap-0.5 text-[9px] font-medium text-emerald-200"><Check size={11} /> zapisano</span>}
             </motion.div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
-            <button onClick={() => stepScheduleDay(-1)} aria-label="Poprzedni dzień godzin pracy" title="Poprzedni dzień" className="hd-button sched-nav-btn rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-emerald-100"><ChevronLeft size={15} /></button>
-            <button onClick={() => stepScheduleDay(1)} aria-label="Następny dzień godzin pracy" title="Następny dzień" className="hd-button sched-nav-btn rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-emerald-100"><ChevronRight size={15} /></button>
+                <button onClick={() => stepWorkDay(-1)} aria-label="Poprzedni dzień godzin pracy" title="Poprzedni dzień" className="hd-button sched-nav-btn rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-emerald-100"><ChevronLeft size={15} /></button>
+                <button onClick={() => stepWorkDay(1)} aria-label="Następny dzień godzin pracy" title="Następny dzień" className="hd-button sched-nav-btn rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-emerald-100"><ChevronRight size={15} /></button>
             <button onClick={() => setComposer("work")} className="hd-button flex items-center gap-1.5 rounded-xl border border-emerald-200/15 bg-emerald-200/[.07] px-2.5 py-2 text-[9px] font-semibold text-emerald-100 hover:bg-emerald-200/[.13] sm:px-3"><Plus size={13} /> Dodaj wpis</button>
           </div>
         </div>
