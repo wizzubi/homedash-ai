@@ -12,7 +12,7 @@
  * Import zapisuje wtedy osobny wiersz `garbageSchedules` na każdą frakcję.
  */
 
-export const FRACTION_KEYS = ["MIXED", "GLASS", "PLASTIC_METAL", "BIO"] as const;
+export const FRACTION_KEYS = ["MIXED", "GLASS", "PLASTIC_METAL", "BIO", "BULKY"] as const;
 export type FractionKey = (typeof FRACTION_KEYS)[number];
 
 export const FRACTION_LABELS: Record<FractionKey, string> = {
@@ -20,6 +20,7 @@ export const FRACTION_LABELS: Record<FractionKey, string> = {
   GLASS: "szkło",
   PLASTIC_METAL: "plastik i metal",
   BIO: "bio",
+  BULKY: "gabaryty",
 };
 
 type CalendarText = {
@@ -84,6 +85,11 @@ export function matchesMixed(raw: string): boolean {
   );
 }
 
+/** Gabaryty / wielkogabarytowe (meble, choinki, wystawka). */
+export function matchesBulky(raw: string): boolean {
+  return hasMatch(raw, /gabaryt|wielkogabaryt|meb(el|li|low)|choink|wystawk/);
+}
+
 /**
  * Zwraca wszystkie rozpoznane frakcje w tekście wydarzenia
  * (kolejność kanoniczna `FRACTION_KEYS`). Pusta lista = brak dopasowania
@@ -96,6 +102,7 @@ export function detectFractions(raw: string): FractionKey[] {
   if (matchesGlass(raw)) found.push("GLASS");
   if (matchesPlasticMetal(raw)) found.push("PLASTIC_METAL");
   if (matchesBio(raw)) found.push("BIO");
+  if (matchesBulky(raw)) found.push("BULKY");
   return found;
 }
 
@@ -118,6 +125,9 @@ export function normalizeFraction(raw: string): FractionKey | null {
 
   // Odpady zmieszane (szary / czarny pojemnik)
   if (matchesMixed(raw)) return "MIXED";
+
+  // Gabaryty / wielkogabarytowe
+  if (matchesBulky(raw)) return "BULKY";
 
   // Trailing colour heuristics (gdy brak słów kluczowych)
   if (hasMatch(raw, /żółt|zolt|zolty/)) return "PLASTIC_METAL";

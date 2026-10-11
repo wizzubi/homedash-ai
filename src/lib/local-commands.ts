@@ -12,7 +12,7 @@
 
 import { matchRadioStation } from "@/lib/radio-stations";
 
-export type WasteFraction = "MIXED" | "GLASS" | "PLASTIC_METAL" | "BIO";
+export type WasteFraction = "MIXED" | "GLASS" | "PLASTIC_METAL" | "BIO" | "BULKY";
 export type WorkPeriod = "today" | "week" | "month";
 
 /** Dzień w pytaniach o plan lekcji: dziś / przesunięcie / dzień tygodnia 1–5. */
@@ -88,6 +88,7 @@ function parseWasteFraction(text: string): WasteFraction | undefined {
   const t = lower(text);
   if (/plastik|metal|pet|butelk.*plastik/.test(t)) return "PLASTIC_METAL";
   if (/szk[łl]/.test(t)) return "GLASS";
+  if (/gabaryt|meb(el|li|low)|choink|wystawk/.test(t)) return "BULKY";
   if (/bio|zielon|organik|kuchenn/.test(t)) return "BIO";
   if (/zmiesz|niesegreg|komunal/.test(t)) return "MIXED";
   return undefined;
@@ -278,7 +279,7 @@ export function parseLocalCommand(raw: string): LocalIntent | null {
 
   // 6. Śmieci / harmonogram ("kiedy śmieci", "wywóz śmieci", "czy dzisiaj bio").
   if (
-    /kiedy\s+(?:s[ąa]|jest|b[ęe]dzie).*śmieci|wyw[oó]z|wystawi|śmieci|smieci|odpad|odbiór|odbior|plastik|metal|szk[łl]o|bio|zmiesz/.test(
+    /kiedy\s+(?:s[ąa]|jest|b[ęe]dzie).*śmieci|wyw[oó]z|wystawi|śmieci|smieci|odpad|odbiór|odbior|plastik|metal|szk[łl]o|bio|zmiesz|gabaryt|meb(el|li)|choink|wystawk/.test(
       t,
     )
   ) {

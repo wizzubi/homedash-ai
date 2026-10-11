@@ -43,6 +43,7 @@ import {
   Send,
   Settings2,
   ShieldAlert,
+  Sofa,
   Sparkles,
   Sun,
   Thermometer,
@@ -208,6 +209,7 @@ const FRACTIONS: Array<{ key: string; label: string; Icon: LucideIcon; color: st
   { key: "PLASTIC_METAL", label: "Plastik + metal", Icon: Recycle, color: "text-sky-300", glow: "bg-sky-400/10" },
   { key: "MIXED", label: "Zmieszane", Icon: Trash2, color: "text-rose-300", glow: "bg-rose-400/10" },
   { key: "GLASS", label: "Szkło", Icon: Wine, color: "text-violet-300", glow: "bg-violet-400/10" },
+  { key: "BULKY", label: "Gabaryty", Icon: Sofa, color: "text-orange-300", glow: "bg-orange-400/10" },
 ];
 
 /** Polskie opisy narzędzi asystenta — pokazywane jako mikro-etykiety przy odpowiedzi. */

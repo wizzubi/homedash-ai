@@ -22,6 +22,7 @@ const FRACTION_LABEL: Record<string, string> = {
   GLASS: "szkło",
   PLASTIC_METAL: "plastik i metal",
   BIO: "bio",
+  BULKY: "gabaryty",
 };
 const FRACTIONS = Object.keys(FRACTION_LABEL);
 
@@ -115,7 +116,7 @@ export function buildSystemPrompt(): string {
     "- `getNextWastePickup` — najbliższy odbiór danej frakcji",
     "- `getExpiringDocuments` — dokumenty wkrótce tracące ważność",
     "",
-    "Wspomniane frakcje odpadów: MIXED (zmieszane), PLASTIC_METAL (plastik i metal), GLASS (szkło), BIO (bio).",
+    "Wspomniane frakcje odpadów: MIXED (zmieszane), PLASTIC_METAL (plastik i metal), GLASS (szkło), BIO (bio), BULKY (gabaryty).",
     "",
     "### Kontekst czasowy",
     `Dzisiaj jest ${today.toLocaleDateString("pl-PL", { day: "numeric", month: "long", year: "numeric" })}, ${days[today.getDay()]}. Tydzień liczy się od poniedziałku.`,
@@ -423,7 +424,7 @@ export function createHomeTools(tracker?: { used: string[] }): ToolSet {
       description: "Podaje najbliższy termin odbioru odpadów z harmonogramu domu (od dziś włącznie).",
       inputSchema: z.object({
         fraction: z
-          .enum(["MIXED", "GLASS", "PLASTIC_METAL", "BIO"])
+          .enum(["MIXED", "GLASS", "PLASTIC_METAL", "BIO", "BULKY"])
           .optional()
           .describe("Frakcja: MIXED = zmieszane, PLASTIC_METAL = plastik i metal, GLASS = szkło, BIO = bio. Pomiń, by podać najbliższy odbiór dowolnej frakcji."),
       }),

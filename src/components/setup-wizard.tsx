@@ -45,6 +45,7 @@ const FRACTIONS = [
   { key: "PLASTIC_METAL", label: "Plastik i metal", hint: "opakowania, puszki" },
   { key: "MIXED", label: "Zmieszane", hint: "odpady resztkowe" },
   { key: "GLASS", label: "Szkło", hint: "butelki i słoiki" },
+  { key: "BULKY", label: "Gabaryty", hint: "meble, duże odpady" },
 ];
 const STEPS: Array<{ id: string; title: string; subtitle: string; icon: LucideIcon }> = [
   { id: "database", title: "Połączenie z bazą", subtitle: "Sprawdź, gdzie mieszka Twój dom", icon: Database },
