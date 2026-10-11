@@ -134,6 +134,7 @@ input, textarea, select { touch-action: manipulation; }
 .tasks-card { min-height: 245px; }
 .notes-card { min-height: 200px; }
 .documents-card { min-height: 205px; }
+.music-card { min-height: 230px; }
 .assistant-card { min-height: 116px; }
 .home-footer { min-height: 20px; }
 
@@ -155,7 +156,7 @@ input, textarea, select { touch-action: manipulation; }
   .center-stack { grid-column: span 6; grid-template-rows: 1.14fr .86fr; }
   .right-stack { grid-column: span 3; grid-template-rows: 1.12fr .88fr 1.02fr .7fr; }
   .weather-card, .waste-card, .stats-card, .school-card, .work-card,
-  .tasks-card, .notes-card, .documents-card, .assistant-card { min-height: 0; }
+  .tasks-card, .notes-card, .documents-card, .music-card, .assistant-card { min-height: 0; }
   .home-footer { height: 14px; min-height: 14px; padding-top: 3px; }
 }
 

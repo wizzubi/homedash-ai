@@ -46,9 +46,9 @@ export async function GET(request: NextRequest) {
       longitude: String(longitude),
       current:
         "temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m",
-      daily: "weather_code,temperature_2m_max,temperature_2m_min",
+      daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
       timezone: "auto",
-      forecast_days: "1",
+      forecast_days: "7",
     });
     const response = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`, {
       cache: "no-store",

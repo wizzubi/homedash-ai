@@ -3,14 +3,14 @@ import { tool, type ToolSet } from "ai";
 import { eq, lte } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
-import { documentReminders, garbageSchedules, notes, tasks, workLogs } from "@/db/schema";
+import { documentReminders, garbageSchedules, notes, tasks, timetable, workLogs } from "@/db/schema";
 import { ensureSchema } from "@/db/migrate";
 import {
   OPENROUTER_FALLBACK_MODEL,
   hasAnyProvider,
   resolveModelCandidates,
 } from "@/lib/ai-providers";
-import { parseLocalCommand } from "@/lib/local-commands";
+import { parseLocalCommand, type LessonDay } from "@/lib/local-commands";
 import { getOpenRouterKey } from "@/lib/ai/openrouter-key";
 
 export const FALLBACK_MODEL = OPENROUTER_FALLBACK_MODEL;
@@ -601,6 +601,98 @@ function localTools(tracker: { used: string[] }) {
   };
 }
 
+function foldDbName(value: string): string {
+  return value
+    .toLocaleLowerCase("pl-PL")
+    .replace(/ł/g, "l")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function polishLessonCount(count: number): string {
+  if (count === 1) return "1 lekcję";
+  const last = count % 10;
+  const lastTwo = count % 100;
+  if (last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14)) return `${count} lekcje`;
+  return `${count} lekcji`;
+}
+
+/**
+ * Serwerowa odpowiedź o planie lekcji z bazy (Turso) — żeby pytania
+ * o lekcje działały także bez AI i bez danych w pamięci klienta.
+ */
+async function answerLessonFromDb(
+  child: string | null,
+  day: LessonDay,
+  kind: "lessonEnd" | "lessonCount" | "lessonPlan",
+): Promise<string | null> {
+  try {
+    await ensureSchema();
+    const rows = await db.select().from(timetable);
+    const known = [...new Set(rows.map((row) => row.childName))];
+
+    let resolved: string | null = null;
+    if (child) {
+      const needle = foldDbName(child);
+      resolved =
+        known.find((name) => foldDbName(name) === needle) ??
+        known.find((name) => foldDbName(name).startsWith(needle) || needle.startsWith(foldDbName(name))) ??
+        known.find((name) => foldDbName(name).slice(0, 3) === needle.slice(0, 3)) ??
+        null;
+      if (!resolved) {
+        return `Nie znalazłam planu dla „${child}”.${known.length > 0 ? ` Znam: ${known.join(", ")}.` : ""}`;
+      }
+    } else if (known.length === 1) {
+      resolved = known[0];
+    } else {
+      return known.length > 0
+        ? `O które dziecko chodzi? Znam: ${known.join(", ")}.`
+        : "Brak zapisanych planów lekcji. Dodaj je w panelu administratora.";
+    }
+
+    const base = new Date();
+    const target = new Date(base);
+    if (day.kind === "offset") target.setDate(target.getDate() + day.days);
+    else if (day.kind === "weekday" && day.day <= 5) {
+      const iso = base.getDay() === 0 ? 7 : base.getDay();
+      target.setDate(target.getDate() + ((day.day - iso + 7) % 7));
+    }
+    const iso = day.kind === "weekday" && day.day > 5 ? 6 : target.getDay() === 0 ? 7 : target.getDay();
+    if (iso > 5) return `W weekend nie ma lekcji — ${resolved} odpoczywa.`;
+
+    const key = (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    const dayLabel =
+      key(target) === key(base)
+        ? "dzisiaj"
+        : key(target) === key(new Date(base.getTime() + 86_400_000))
+          ? "jutro"
+          : target.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "numeric" });
+
+    const lessons = rows
+      .filter((row) => row.childName === resolved && row.dayOfWeek === iso)
+      .sort((a, b) => a.startTime.localeCompare(b.startTime));
+    if (lessons.length === 0) return `${resolved} nie ma lekcji ${dayLabel}.`;
+    if (kind === "lessonEnd") {
+      const last = lessons[lessons.length - 1];
+      return `${resolved} kończy lekcje ${dayLabel} o ${last.endTime} (${last.subject}).`;
+    }
+    if (kind === "lessonCount") {
+      return `${resolved} ma ${dayLabel} ${polishLessonCount(lessons.length)}.`;
+    }
+    const plan = lessons
+      .slice(0, 8)
+      .map(
+        (lesson, index) =>
+          `${index + 1}. ${lesson.subject} ${lesson.startTime}–${lesson.endTime}${lesson.classroom ? ` (s. ${lesson.classroom})` : ""}`,
+      )
+      .join("; ");
+    return `Plan lekcji — ${resolved} ${dayLabel}: ${plan}.`;
+  } catch (error) {
+    console.error("lesson read failed", error);
+    return null;
+  }
+}
+
 /**
  * Deterministyczny fallback: gdy model AI jest niedostępny (limit zapytań,
  * guardrail, brak klucza), proste komendy domowe są obsługiwane lokalnie,
@@ -611,6 +703,8 @@ function localTools(tracker: { used: string[] }) {
  *  - godziny pracy:  "pracowałem", "przepracowałem", "godziny pracy", "h pracy"
  *  - śmieci:         "kiedy śmieci", "wywóz śmieci", "czy dzisiaj bio"
  *  - notatki:        "notatka", "zanotuj", "zapisz notatkę"
+ *  - lekcje:         "o której kończy", "ile lekcji ma", "plan lekcji"
+ *  - radio:          obsługuje klient (dźwięk w przeglądarce), nie serwer
  */
 export async function runLocalCommand(
   message: string,
@@ -660,6 +754,20 @@ export async function runLocalCommand(
     case "workSummary": {
       const result = await exec("getWorkSummary", { period: intent.period });
       if (result?.message) return { reply: result.message, mutated: false };
+      return null;
+    }
+    case "lessonEnd":
+    case "lessonCount":
+    case "lessonPlan": {
+      const reply = await answerLessonFromDb(intent.child, intent.day, intent.kind);
+      if (reply) return { reply: `⚡ ${reply}`, mutated: false };
+      return null;
+    }
+    case "radioPlay":
+    case "radioStop":
+    case "volumeUp":
+    case "volumeDown": {
+      // Dźwięk żyje w przeglądarce — serwer go nie obsłuży (klient tak).
       return null;
     }
   }

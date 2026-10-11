@@ -34,7 +34,10 @@ import {
   NotebookPen,
   Pin,
   Plus,
+  Play,
+  Pause,
   Recycle,
+  Radio,
   RotateCcw,
   Send,
   Settings2,
@@ -44,7 +47,7 @@ import {
   Thermometer,
   Trash2,
   Volume2,
-  Wind,
+  VolumeX,
   Wine,
   X,
   type LucideIcon,
@@ -60,6 +63,9 @@ import {
   useState,
 } from "react";
 import { parseLocalCommand } from "@/lib/local-commands";
+import { RADIO_STATIONS } from "@/lib/radio-stations";
+import { useRadioPlayer, emitRadioCommand } from "@/hooks/useRadioPlayer";
+import { cleanSpeechText } from "@/lib/clean-speech-text";
 import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 
 type TaskItem = {
@@ -103,7 +109,13 @@ type WeatherData = {
     weather_code?: number;
     is_day?: number;
   };
-  daily?: { temperature_2m_max?: number[]; temperature_2m_min?: number[] };
+  daily?: {
+    time?: string[];
+    weather_code?: number[];
+    temperature_2m_max?: number[];
+    temperature_2m_min?: number[];
+    precipitation_probability_max?: number[];
+  };
 };
 type ChatMessage = { role: "user" | "assistant"; content: string; tools?: string[]; source?: "local" | "openrouter" | "groq" | "error" };
 type ComposerKind = "task" | "note" | "work";
@@ -207,19 +219,24 @@ const TOOL_LABELS: Record<string, string> = {
 
 /** Układane kafelki dashboardu — kolejność zapisywana w localStorage. */
 type TileId =
-  | "weather" | "waste" | "stats"
+  | "weather" | "waste" | "stats" | "music"
   | "school" | "work"
   | "tasks" | "notes" | "documents" | "assistant";
 type StackId = "left" | "center" | "right";
 const STACKS: StackId[] = ["left", "center", "right"];
-const ALL_TILES: TileId[] = ["weather", "waste", "stats", "school", "work", "tasks", "notes", "documents", "assistant"];
+const ALL_TILES: TileId[] = ["weather", "waste", "stats", "music", "school", "work", "tasks", "notes", "documents", "assistant"];
 
 function defaultTileOrder(): Record<StackId, TileId[]> {
   return {
-    left: ["weather", "waste", "stats"],
+    left: ["weather", "waste", "stats", "music"],
     center: ["school", "work"],
     right: ["tasks", "notes", "documents", "assistant"],
   };
+}
+
+function defaultStackOf(id: TileId): StackId {
+  const defaults = defaultTileOrder();
+  return (STACKS.find((stack) => defaults[stack].includes(id)) ?? "left") as StackId;
 }
 
 const TILE_ORDER_KEY = "homedash:tile-order:v1";
@@ -236,13 +253,60 @@ function loadTileOrder(): Record<StackId, TileId[]> {
       return Array.isArray(value) ? value.filter((id): id is TileId => typeof id === "string" && (ALL_TILES as string[]).includes(id)) : [];
     };
     const order: Record<StackId, TileId[]> = { left: pick("left"), center: pick("center"), right: pick("right") };
-    const seen = [...order.left, ...order.center, ...order.right];
-    // Układ ważny tylko, gdy zawiera dokładnie 9 znanych kafli, każdy raz.
-    if (seen.length !== ALL_TILES.length || new Set(seen).size !== ALL_TILES.length) return fallback;
+    // Scalanie zamiast odrzucania: obce wpisy wypadają, brakujące znane kafle
+    // (np. po aktualizacji aplikacji) dopisywane są do domyślnych stosów.
+    const seen = new Set<TileId>();
+    for (const stack of STACKS) {
+      order[stack] = order[stack].filter((id) => {
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+    }
+    for (const id of ALL_TILES) {
+      if (!seen.has(id)) {
+        order[defaultStackOf(id)].push(id);
+        seen.add(id);
+      }
+    }
     return order;
   } catch {
     return fallback;
   }
+}
+
+function foldName(value: string): string {
+  return value
+    .toLocaleLowerCase("pl-PL")
+    .replace(/ł/g, "l")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+/**
+ * Rozmyte dopasowanie imienia („Leny” → „Lena”): dokładne, prefiksowe,
+ * potem pierwsze 3 litery (gdy jednoznaczne wśród znanych).
+ */
+function matchChildName(raw: string | null, known: string[]): string | null {
+  if (!raw) return null;
+  const needle = foldName(raw.trim());
+  if (!needle) return null;
+  const folded = known.map((name) => ({ name, fold: foldName(name) }));
+  const exact = folded.find((entry) => entry.fold === needle);
+  if (exact) return exact.name;
+  const prefix = folded.filter((entry) => entry.fold.startsWith(needle) || needle.startsWith(entry.fold));
+  if (prefix.length === 1) return prefix[0].name;
+  const stem = folded.filter((entry) => entry.fold.slice(0, 3) === needle.slice(0, 3));
+  if (stem.length === 1) return stem[0].name;
+  return null;
+}
+
+function polishLessons(count: number): string {
+  if (count === 1) return "1 lekcję";
+  const last = count % 10;
+  const lastTwo = count % 100;
+  if (last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14)) return `${count} lekcje`;
+  return `${count} lekcji`;
 }
 
 function GlassCard({
@@ -353,6 +417,9 @@ export default function HomeDashboard() {
   // Przeglądanie planu lekcji na inne dni (strzałki / swipe): 0 = dziś.
   const [dayOffset, setDayOffset] = useState(0);
   const [slideDir, setSlideDir] = useState(0);
+  // Prognoza pogody: przeglądany dzień (0 = dziś) + modal 7-dniowy.
+  const [weatherOffset, setWeatherOffset] = useState(0);
+  const [forecastOpen, setForecastOpen] = useState(false);
   const touchX = useRef<number | null>(null);
   const workTouchX = useRef<number | null>(null);
   // Przestawianie kafli: kolejność w localStorage, tryb układania w nagłówku.
@@ -418,6 +485,9 @@ export default function HomeDashboard() {
     },
   });
 
+  // Radio internetowe — jeden odtwarzacz na dashboard (kafel + głos przez bus).
+  const radio = useRadioPlayer();
+
   const refreshDashboard = useCallback(async () => {
     try {
       const next = await requestJson<DashboardData>("/api/dashboard", { cache: "no-store" });
@@ -468,13 +538,16 @@ export default function HomeDashboard() {
   const ttsVoice = dashboard.config.tts_voice === "pl-PL-MarekNeural" ? "pl-PL-MarekNeural" : "pl-PL-ZofiaNeural";
 
   const playSpeech = useCallback(async (text: string) => {
-    if (typeof window === "undefined" || !text.trim()) return;
+    if (typeof window === "undefined") return;
+    // Czysty tekst dla lektora: bez Markdown, ze słownymi jednostkami.
+    const spoken = cleanSpeechText(text);
+    if (!spoken) return;
     setSpeaking(true);
     try {
       const response = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, voice: ttsVoice }),
+        body: JSON.stringify({ text: spoken, voice: ttsVoice }),
       });
       if (!response.ok) throw new Error("Edge TTS niedostępne");
       const audioUrl = URL.createObjectURL(await response.blob());
@@ -486,7 +559,7 @@ export default function HomeDashboard() {
       setSpeaking(false);
       if ("speechSynthesis" in window) {
         window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
+        const utterance = new SpeechSynthesisUtterance(spoken);
         utterance.lang = "pl-PL";
         utterance.rate = 0.96;
         utterance.onend = () => setSpeaking(false);
@@ -704,13 +777,98 @@ export default function HomeDashboard() {
           );
           return;
         }
+        case "radioPlay": {
+          const station = RADIO_STATIONS.find((entry) => entry.id === intent.stationId) ?? null;
+          emitRadioCommand({ action: "play", stationId: station?.id ?? null });
+          pushLocal(station ? `⚡ Włączam ${station.name}.` : "⚡ Włączam radio.");
+          return;
+        }
+        case "radioStop": {
+          emitRadioCommand({ action: "stop" });
+          pushLocal("⚡ Zatrzymano odtwarzanie.");
+          return;
+        }
+        case "volumeUp": {
+          emitRadioCommand({ action: "volume-up" });
+          pushLocal("⚡ Głośniej.");
+          return;
+        }
+        case "volumeDown": {
+          emitRadioCommand({ action: "volume-down" });
+          pushLocal("⚡ Ciszej.");
+          return;
+        }
+        case "lessonEnd":
+        case "lessonCount":
+        case "lessonPlan": {
+          const reference = now ?? new Date();
+          const knownChildren = [
+            ...new Set([
+              ...(dashboard.family ?? []).filter((member) => member.role === "child").map((member) => member.name),
+              ...dashboard.timetable.map((lesson) => lesson.childName),
+            ]),
+          ];
+          let child = matchChildName(intent.child, knownChildren);
+          if (!child && !intent.child) {
+            // Bez imienia: jedno dziecko w domu → bierzemy je wprost.
+            child = knownChildren.length === 1 ? knownChildren[0] : null;
+          }
+          if (!child) {
+            pushLocal(
+              knownChildren.length > 0
+                ? `⚡ O które dziecko chodzi? Znam: ${knownChildren.join(", ")}.`
+                : "⚡ Nie mam zapisanych dzieci ani planu lekcji. Dodaj je w panelu administratora.",
+            );
+            return;
+          }
+          const target = new Date(reference);
+          if (intent.day.kind === "offset") target.setDate(target.getDate() + intent.day.days);
+          else if (intent.day.kind === "weekday" && intent.day.day <= 5) {
+            target.setDate(target.getDate() + ((intent.day.day - isoWeekday(reference) + 7) % 7));
+          }
+          const iso = intent.day.kind === "weekday" && intent.day.day > 5 ? 6 : isoWeekday(target);
+          const dayLabel =
+            dateKey(target) === dateKey(reference)
+              ? "dzisiaj"
+              : dateKey(target) === dateKey(new Date(reference.getTime() + 86_400_000))
+                ? "jutro"
+                : dateKey(target) === dateKey(new Date(reference.getTime() - 86_400_000))
+                  ? "wczoraj"
+                  : target.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "numeric" });
+          if (iso > 5) {
+            pushLocal(`⚡ W weekend nie ma lekcji — ${child} odpoczywa.`);
+            return;
+          }
+          const lessons = dashboard.timetable
+            .filter((lesson) => lesson.childName === child && lesson.dayOfWeek === iso)
+            .sort((a, b) => a.startTime.localeCompare(b.startTime));
+          if (lessons.length === 0) {
+            pushLocal(`⚡ ${child} nie ma lekcji ${dayLabel}.`);
+            return;
+          }
+          if (intent.kind === "lessonEnd") {
+            const last = lessons[lessons.length - 1];
+            pushLocal(`⚡ ${child} kończy lekcje ${dayLabel} o ${last.endTime} (${last.subject}).`);
+            return;
+          }
+          if (intent.kind === "lessonCount") {
+            pushLocal(`⚡ ${child} ma ${dayLabel} ${polishLessons(lessons.length)}.`);
+            return;
+          }
+          const plan = lessons
+            .slice(0, 8)
+            .map((lesson, index) => `${index + 1}. ${lesson.subject} ${lesson.startTime}–${lesson.endTime}${lesson.classroom ? ` (s. ${lesson.classroom})` : ""}`)
+            .join("; ");
+          pushLocal(`⚡ Plan lekcji — ${child} ${dayLabel}: ${plan}.`);
+          return;
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Nie udało się wykonać polecenia.";
       setMessages((previous) => [...previous, { role: "assistant", content: message, source: "error" }]);
       notify(message);
     }
-  }, [askAssistant, assistantBusy, createNote, createTask, createWorkLog, dashboard.garbage, dashboard.tasks, dashboard.workLogs, notify, now, playSpeech, refreshDashboard]);
+  }, [askAssistant, assistantBusy, createNote, createTask, createWorkLog, dashboard.family, dashboard.garbage, dashboard.tasks, dashboard.timetable, dashboard.workLogs, notify, now, playSpeech, refreshDashboard]);
 
   useEffect(() => { handleUserCommandRef.current = handleUserCommand; }, [handleUserCommand]);
 
@@ -857,7 +1015,27 @@ export default function HomeDashboard() {
     return date.getFullYear() === currentTime.getFullYear() && date.getMonth() === currentTime.getMonth() ? sum + log.hours : sum;
   }, 0);
   const weatherView = weatherPresentation(weather?.current?.weather_code ?? 2, weather?.current?.is_day ?? 1);
-  const WeatherIcon = weatherView.Icon;
+  // Prognoza 7-dniowa z Open-Meteo (krok: strzałki w kaflu, tap = modal).
+  const forecastDays = useMemo(() => {
+    const times = weather?.daily?.time ?? [];
+    return times.map((iso, index) => ({
+      date: new Date(`${iso}T12:00:00`),
+      code: weather?.daily?.weather_code?.[index] ?? 0,
+      max: weather?.daily?.temperature_2m_max?.[index],
+      min: weather?.daily?.temperature_2m_min?.[index],
+      precip: weather?.daily?.precipitation_probability_max?.[index],
+    }));
+  }, [weather]);
+  const wOffset = Math.max(0, Math.min(weatherOffset, Math.max(forecastDays.length - 1, 0)));
+  const forecastDay = forecastDays[wOffset];
+  const forecastView = forecastDay ? weatherPresentation(forecastDay.code, 1) : null;
+  const weatherDayLabel = wOffset === 0
+    ? "dziś"
+    : wOffset === 1
+      ? "jutro"
+      : forecastDay
+        ? forecastDay.date.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "numeric" })
+        : `+${wOffset} dni`;
   const urgentDocuments = [...dashboard.documents].sort((a, b) => new Date(a.expirationDate).getTime() - new Date(b.expirationDate).getTime()).slice(0, 3);
   const openTasks = dashboard.tasks.filter((task) => !task.isCompleted);
   const recentNotes = dashboard.notes.slice(0, 2);
@@ -946,27 +1124,87 @@ export default function HomeDashboard() {
   const tileNodes: Record<TileId, ReactNode> = {
     weather: (
       <GlassCard delay={0.04} className="weather-card hd-glow-blue">
-        <SectionHeading icon={MapPin} label="Pogoda · teraz" accent="text-sky-300" />
-        <div className="flex min-h-0 flex-1 items-center justify-between gap-2">
+        <SectionHeading
+          icon={MapPin}
+          label={`Pogoda · ${weatherDayLabel}`}
+          accent="text-sky-300"
+          action={(
+            <span className="flex items-center gap-0.5">
+              <button onClick={() => setWeatherOffset((previous) => Math.max(0, previous - 1))} disabled={wOffset === 0} aria-label="Poprzedni dzień prognozy" className="hd-button sched-nav-btn rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-sky-100 disabled:opacity-30"><ChevronLeft size={14} /></button>
+              <button onClick={() => setWeatherOffset((previous) => Math.min(Math.max(forecastDays.length - 1, 0), previous + 1))} disabled={forecastDays.length === 0 || wOffset >= forecastDays.length - 1} aria-label="Następny dzień prognozy" className="hd-button sched-nav-btn rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-sky-100 disabled:opacity-30"><ChevronRight size={14} /></button>
+            </span>
+          )}
+        />
+        <button onClick={() => setForecastOpen(true)} title="Pokaż prognozę 7-dniową" className="flex min-h-0 flex-1 items-center justify-between gap-2 text-left">
           <div className="min-w-0">
             <p className="truncate text-[11px] font-medium text-slate-400">{city}</p>
-            <div className="mt-1 flex items-start gap-0.5">
-              <span className="text-[clamp(2.7rem,4vw,4.2rem)] font-light leading-none tracking-[-.08em] text-slate-50">{weather?.current?.temperature_2m != null ? Math.round(weather.current.temperature_2m) : "—"}</span>
-              <span className="mt-1 text-2xl font-light text-slate-400">°</span>
-            </div>
-            <p className="mt-2 text-[11px] font-medium text-slate-300">{weatherUnavailable ? "Pogoda niedostępna" : weather ? weatherView.label : "Pobieram prognozę…"}</p>
-            {weather?.current?.apparent_temperature != null && <p className="mt-1 text-[9px] text-slate-500">Odczuwalna {Math.round(weather.current.apparent_temperature)}°</p>}
+            {wOffset === 0 ? (
+              <>
+                <div className="mt-1 flex items-start gap-0.5">
+                  <span className="text-[clamp(2.7rem,4vw,4.2rem)] font-light leading-none tracking-[-.08em] text-slate-50">{weather?.current?.temperature_2m != null ? Math.round(weather.current.temperature_2m) : "—"}</span>
+                  <span className="mt-1 text-2xl font-light text-slate-400">°</span>
+                </div>
+                <p className="mt-2 text-[11px] font-medium text-slate-300">{weatherUnavailable ? "Pogoda niedostępna" : weather ? weatherView.label : "Pobieram prognozę…"}</p>
+                {weather?.current?.apparent_temperature != null && <p className="mt-1 text-[9px] text-slate-500">Odczuwalna {Math.round(weather.current.apparent_temperature)}°</p>}
+              </>
+            ) : forecastDay ? (
+              <>
+                <div className="mt-1 flex items-baseline gap-1.5">
+                  <span className="text-[clamp(2rem,3vw,2.8rem)] font-light leading-none tracking-[-.08em] text-slate-50">{forecastDay.max != null ? Math.round(forecastDay.max) : "—"}°</span>
+                  <span className="text-sm font-light text-slate-500">{forecastDay.min != null ? `${Math.round(forecastDay.min)}°` : ""}</span>
+                </div>
+                <p className="mt-2 text-[11px] font-medium text-slate-300">{forecastView?.label ?? "—"}</p>
+                {forecastDay.precip != null && <p className="mt-1 flex items-center gap-1 text-[9px] text-slate-500"><Droplets size={11} className="text-sky-200/70" /> Opady {Math.round(forecastDay.precip)}%</p>}
+              </>
+            ) : (
+              <p className="mt-2 text-[11px] text-slate-500">Brak prognozy na ten dzień.</p>
+            )}
           </div>
           <div className="relative mr-1 grid h-[76px] w-[76px] shrink-0 place-items-center rounded-[24px] border border-white/[.06] bg-gradient-to-br from-white/[.055] to-transparent sm:h-[92px] sm:w-[92px]">
-            <span className={`absolute inset-2 rounded-[20px] blur-2xl opacity-20 ${weatherView.tint.replace("text-", "bg-")}`} />
-            <WeatherIcon className={`relative ${weatherView.tint}`} size={49} strokeWidth={1.2} />
+            <span className={`absolute inset-2 rounded-[20px] blur-2xl opacity-20 ${(forecastView ?? weatherView).tint.replace("text-", "bg-")}`} />
+            {(() => {
+              const Presentation = forecastView ?? weatherView;
+              const ForecastIcon = Presentation.Icon;
+              return <ForecastIcon className={`relative ${Presentation.tint}`} size={49} strokeWidth={1.2} />;
+            })()}
           </div>
-        </div>
+        </button>
         <div className="mt-3 flex shrink-0 items-center justify-between border-t border-white/[.055] pt-2.5 text-[9px] text-slate-500">
           <span className="flex items-center gap-1.5"><Thermometer size={12} className="text-rose-200/70" /> Max <b className="font-medium text-slate-300">{weather?.daily?.temperature_2m_max?.[0] != null ? `${Math.round(weather.daily.temperature_2m_max[0])}°` : "—"}</b></span>
           <span className="flex items-center gap-1.5"><Droplets size={12} className="text-sky-200/70" /> {weather?.current?.relative_humidity_2m != null ? `${weather.current.relative_humidity_2m}%` : "—"}</span>
-          <span className="flex items-center gap-1.5"><Wind size={12} className="text-slate-400" /> {weather?.current?.wind_speed_10m != null ? `${Math.round(weather.current.wind_speed_10m)} km/h` : "—"}</span>
+          <button onClick={() => setForecastOpen(true)} className="flex items-center gap-1 text-slate-400 transition hover:text-sky-100">7 dni <ArrowRight size={11} /></button>
         </div>
+        <AnimatePresence>
+          {forecastOpen && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[85] flex items-end justify-center bg-slate-950/72 p-0 backdrop-blur-md sm:items-center sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setForecastOpen(false); }}>
+              <motion.div initial={{ opacity: 0, y: 22, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 15, scale: 0.99 }} className="hd-card max-h-[85dvh] w-full max-w-[520px] flex-col overflow-hidden rounded-b-none p-4 sm:rounded-[24px] sm:p-5" role="dialog" aria-label="Prognoza pogody na 7 dni">
+                <div className="flex shrink-0 items-center gap-3 border-b border-white/[.06] pb-3">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[14px] border border-sky-300/15 bg-sky-300/[.08] text-sky-100"><MapPin size={19} /></span>
+                  <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-slate-100">Prognoza · {city}</span><span className="mt-0.5 block text-[9px] text-slate-500">Najbliższe 7 dni</span></span>
+                  <button onClick={() => setForecastOpen(false)} className="rounded-lg p-2 text-slate-500 hover:bg-white/5 hover:text-white" aria-label="Zamknij prognozę"><X size={17} /></button>
+                </div>
+                <div className="hd-scroll min-h-0 flex-1 space-y-1 overflow-y-auto py-3">
+                  {forecastDays.length === 0 && <p className="py-6 text-center text-[11px] text-slate-500">Prognoza niedostępna. Spróbuj później.</p>}
+                  {forecastDays.slice(0, 7).map((day, index) => {
+                    const view = weatherPresentation(day.code, 1);
+                    const DayIcon = view.Icon;
+                    return (
+                      <div key={day.date.toISOString().slice(0, 10)} className={`flex items-center gap-3 rounded-xl px-2.5 py-2 ${index === 0 ? "border border-sky-300/15 bg-sky-300/[.05]" : "bg-white/[.02]"}`}>
+                        <span className="w-[92px] shrink-0 text-[10px] font-medium capitalize text-slate-300">
+                          {index === 0 ? "Dziś" : index === 1 ? "Jutro" : day.date.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "short" })}
+                        </span>
+                        <DayIcon size={20} strokeWidth={1.5} className={`shrink-0 ${view.tint}`} />
+                        <span className="min-w-0 flex-1 truncate text-[9px] text-slate-500">{view.label}</span>
+                        {day.precip != null && <span className="flex shrink-0 items-center gap-1 text-[9px] text-sky-200/80"><Droplets size={11} />{Math.round(day.precip)}%</span>}
+                        <span className="shrink-0 font-mono text-[11px] text-slate-200">{day.max != null ? `${Math.round(day.max)}°` : "—"}<span className="ml-1.5 text-slate-600">{day.min != null ? `${Math.round(day.min)}°` : ""}</span></span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </GlassCard>
     ),
     waste: (
@@ -1008,6 +1246,48 @@ export default function HomeDashboard() {
         <div className="mt-2 flex shrink-0 items-center gap-2 text-[9px] text-slate-500">
           <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800"><span className="block h-full rounded-full bg-gradient-to-r from-emerald-300/80 to-sky-300/80 transition-all" style={{ width: `${Math.min(100, (weekHours / 40) * 100)}%` }} /></span>
           <span>cel tygodnia · 40 h</span>
+        </div>
+      </GlassCard>
+    ),
+    music: (
+      <GlassCard delay={0.2} className="music-card hd-glow-blue">
+        <SectionHeading icon={Radio} label="Radio domowe" accent="text-sky-300" action={radio.playing ? <span className="flex items-center gap-1 rounded-full border border-emerald-200/15 bg-emerald-200/[.07] px-2 py-0.5 text-[8px] font-semibold text-emerald-200"><span className="status-breathe h-1.5 w-1.5 rounded-full bg-emerald-300" /> gra</span> : undefined} />
+        <div className="flex min-h-0 flex-1 items-center gap-3">
+          <button
+            onClick={() => radio.toggle()}
+            aria-label={radio.playing ? "Zatrzymaj radio" : "Włącz radio"}
+            title={radio.playing ? "Zatrzymaj" : "Włącz"}
+            className={`hd-button grid h-12 w-12 shrink-0 place-items-center rounded-2xl border transition ${radio.playing ? "border-emerald-200/25 bg-emerald-200/10 text-emerald-100" : "border-sky-300/20 bg-sky-300/[.07] text-sky-100 hover:bg-sky-300/[.12]"}`}
+          >
+            {radio.playing ? <Pause size={19} /> : <Play size={19} className="ml-0.5" />}
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[12px] font-semibold text-slate-100">{radio.station?.name ?? "Wybierz stację"}</p>
+            <p className="mt-0.5 truncate text-[9px] text-slate-500">
+              {radio.error ? <span className="text-rose-200/90">{radio.error}</span> : radio.playing ? "Odtwarzanie na żywo" : "Powiedz „włącz radio 357”"}
+            </p>
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <button onClick={() => radio.adjustVolume(-0.1)} aria-label="Ciszej" className="rounded-md p-1 text-slate-500 transition hover:bg-white/5 hover:text-sky-100"><VolumeX size={12} /></button>
+              <span className="h-1 flex-1 overflow-hidden rounded-full bg-slate-800"><span className="block h-full rounded-full bg-sky-300/70 transition-all" style={{ width: `${Math.round(radio.volume * 100)}%` }} /></span>
+              <button onClick={() => radio.adjustVolume(0.1)} aria-label="Głośniej" className="rounded-md p-1 text-slate-500 transition hover:bg-white/5 hover:text-sky-100"><Volume2 size={12} /></button>
+            </div>
+          </div>
+        </div>
+        <div className="hd-scroll mt-2 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-0.5">
+          {RADIO_STATIONS.map((entry) => {
+            const activeStation = entry.id === radio.stationId;
+            return (
+              <button
+                key={entry.id}
+                onClick={() => void radio.playStation(entry.id)}
+                className={`flex min-h-[32px] items-center gap-2 rounded-xl px-2 py-1 text-left transition ${activeStation ? "border border-sky-300/20 bg-sky-300/[.08]" : "border border-transparent hover:bg-white/[.025]"}`}
+              >
+                <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg ${activeStation ? "bg-sky-300/15 text-sky-100" : "bg-white/[.04] text-slate-400"}`}><Radio size={12} /></span>
+                <span className={`min-w-0 flex-1 truncate text-[10px] font-medium ${activeStation ? "text-sky-50" : "text-slate-300"}`}>{entry.name}</span>
+                {activeStation && radio.playing && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-300" />}
+              </button>
+            );
+          })}
         </div>
       </GlassCard>
     ),
@@ -1332,7 +1612,7 @@ export default function HomeDashboard() {
       <AnimatePresence>
         {assistantOpen && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[85] flex items-end justify-center bg-slate-950/72 p-0 backdrop-blur-md sm:items-center sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setAssistantOpen(false); }}>
-            <motion.div initial={{ opacity: 0, y: 22, scale: .99 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 15, scale: .99 }} className="hd-card flex h-[min(650px,88dvh)] w-full max-w-[520px] flex-col rounded-b-none p-4 sm:rounded-[24px] sm:p-5">
+            <motion.div initial={{ opacity: 0, y: 22, scale: .99 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 15, scale: .99 }} className="hd-card flex h-[min(650px,85dvh)] max-h-[85dvh] w-full max-w-[520px] flex-col overflow-hidden rounded-b-none p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:rounded-[24px] sm:p-5">
               <div className="flex shrink-0 items-center gap-3 border-b border-white/[.06] pb-3">
                 <span className="grid h-10 w-10 place-items-center rounded-[14px] border border-emerald-200/15 bg-emerald-200/[.08] text-emerald-100"><Sparkles size={19} /></span>
                 <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-slate-100">Asystent domowy</span><span className="mt-0.5 flex items-center gap-1.5 text-[9px] text-slate-500"><span className={`h-1.5 w-1.5 rounded-full ${wakeListening ? "bg-rose-300" : "bg-emerald-300"}`} />{wakeListening ? `Nasłuchuję · ${wakeWord}` : voiceStatus}</span></span>

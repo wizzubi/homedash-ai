@@ -10,8 +10,13 @@
  *   2. `null` → dopiero wtedy POST do `/api/chat` lub `/api/assistant` (AI Fallback).
  */
 
+import { matchRadioStation } from "@/lib/radio-stations";
+
 export type WasteFraction = "MIXED" | "GLASS" | "PLASTIC_METAL" | "BIO";
 export type WorkPeriod = "today" | "week" | "month";
+
+/** Dzień w pytaniach o plan lekcji: dziś / przesunięcie / dzień tygodnia 1–5. */
+export type LessonDay = { kind: "today" } | { kind: "offset"; days: number } | { kind: "weekday"; day: number };
 
 export type LocalIntent =
   | { kind: "addTask"; title: string; assignedTo: string | null }
@@ -19,9 +24,16 @@ export type LocalIntent =
   | { kind: "logWork"; hours?: number; startTime?: string; endTime?: string; note?: string | null }
   | { kind: "workSummary"; period: WorkPeriod }
   | { kind: "wasteQuery"; fraction?: WasteFraction }
-  | { kind: "addNote"; content: string; title?: string | null };
+  | { kind: "addNote"; content: string; title?: string | null }
+  | { kind: "radioPlay"; stationId: string | null }
+  | { kind: "radioStop" }
+  | { kind: "volumeUp" }
+  | { kind: "volumeDown" }
+  | { kind: "lessonEnd"; child: string | null; day: LessonDay }
+  | { kind: "lessonCount"; child: string | null; day: LessonDay }
+  | { kind: "lessonPlan"; child: string | null; day: LessonDay };
 
-export type LocalSource = "local-task" | "local-work" | "local-waste" | "local-note";
+export type LocalSource = "local-task" | "local-work" | "local-waste" | "local-note" | "local-radio" | "local-lessons";
 
 const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -80,6 +92,63 @@ function parseWasteFraction(text: string): WasteFraction | undefined {
   return undefined;
 }
 
+const WEEKDAY_KEYS: Record<string, number> = {
+  poniedzialek: 1,
+  wtorek: 2,
+  sroda: 3,
+  srode: 3,
+  czwartek: 4,
+  piatek: 5,
+};
+
+function foldPl(value: string): string {
+  return value
+    .toLocaleLowerCase("pl-PL")
+    .replace(/ł/g, "l")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+/** Dzień tygodnia z tekstu („jutro”, „we wtorek”, „w poniedziałek”). */
+export function parseLessonDay(text: string): LessonDay {
+  const folded = foldPl(text);
+  if (/pojutrze/.test(folded)) return { kind: "offset", days: 2 };
+  if (/\bjutro\b/.test(folded)) return { kind: "offset", days: 1 };
+  if (/przedwczoraj/.test(folded)) return { kind: "offset", days: -2 };
+  if (/\bwczoraj\b/.test(folded)) return { kind: "offset", days: -1 };
+  for (const [key, day] of Object.entries(WEEKDAY_KEYS)) {
+    if (folded.includes(key)) return { kind: "weekday", day };
+  }
+  if (/weekend|sobot|niedziel/.test(folded)) return { kind: "weekday", day: 6 };
+  return { kind: "today" };
+}
+
+/**
+ * Kandydat na imię dziecka („ile lekcji ma Lena”, „kiedy kończy Tomek”,
+ * „plan lekcji Leny”). Dopasowanie rozmyte do znanych imion robi
+ * `handleUserCommand` — tu zwracamy surowy fragment lub `null`.
+ */
+export function parseLessonChild(text: string): string | null {
+  // Wzorce szczegółowe (imie po frazie, z pominięciem słów-kluczy).
+  const specific =
+    text.match(/ile\s+lekcji\s+(?:ma\s+)?([\p{L}]{2,24})/iu) ??
+    text.match(/(?:ma|mają|maja)\s+lekcje\s+([\p{L}]{2,24})/iu) ??
+    text.match(/(?:kończy|konczy)\s+([\p{L}]{2,24})/iu) ??
+    text.match(/plan\s+lekcji\s+([\p{L}]{2,24})\s*[?.!]*$/iu) ??
+    text.match(/lekcje\s+([\p{L}]{2,24})\s*[?.!]*$/iu);
+  if (specific?.[1]) return specific[1].trim();
+  const match = text.match(
+    /(?:ma|mają|maja|kończy|konczy|lekcje|lekcji|lekcja|plan(?:u)?\s+lekcji?)\s+([\p{L}]{2,24})/iu,
+  );
+  const name = match?.[1]?.trim();
+  if (!name) return null;
+  // Odrzuć słowa-klucze złapane zamiast imienia („ma lekcje”, „plan lekcji”).
+  if (/^(lekcj[eaie]|lekcja|szkoł[ay]|szkola|plan|planu|dziś|dzisiaj|jutro|pojutrze|wczoraj|tygodniu|domu)$/i.test(name)) {
+    return null;
+  }
+  return name;
+}
+
 // ── Zadania / zakupy ─────────────────────────────────────────────
 // "dodaj zadanie …", "dopisz …", "kup …", "kupić …", "zrób …"
 const TASK_PREFIX =
@@ -104,6 +173,33 @@ export function parseLocalCommand(raw: string): LocalIntent | null {
   const text = clean(raw);
   if (!text || text.length > 1200) return null;
   const t = lower(text);
+
+  // 0. Radio / muzyka — przed wszystkim (np. „wyłącz” vs „włącz”).
+  if (/^(pauza|pauzuj|stop)\b/.test(t)) {
+    return { kind: "radioStop" };
+  }
+  if (/wyłącz|wylacz|zatrzymaj|stop|pauz|wstrzymaj|cisza|ucisz/.test(t) && /radi|muzy|dzwiek|dźwięk|odtwarza|granie/.test(t)) {
+    return { kind: "radioStop" };
+  }
+  if (/głośniej|glosniej|podgłoś|podglos|pogłośnij|poglosnij/.test(t)) {
+    return { kind: "volumeUp" };
+  }
+  if (/ciszej|ścisz|scisz|przycisz|wycisz|przycisz/.test(t)) {
+    return { kind: "volumeDown" };
+  }
+  {
+    const station = matchRadioStation(text);
+    const wantsRadio = /włącz|wlacz|zagraj|graj|odtwórz|odtworz|puść|pusc|nastaw|przełącz|przelacz/.test(t);
+    if (station && (wantsRadio || /radi|muzy|stacj|fm|357/.test(t))) {
+      return { kind: "radioPlay", stationId: station.id };
+    }
+    if (wantsRadio && /radi|muzy|dzwiek|dźwięk|stacj/.test(t)) {
+      return { kind: "radioPlay", stationId: null };
+    }
+    if (/^graj\b/.test(t)) {
+      return { kind: "radioPlay", stationId: station?.id ?? null };
+    }
+  }
 
   // 1. Notatki — najpierw, bo "zapisz notatkę" zawiera też czasownik zadań.
   const noteMatch = text.match(NOTE_PREFIX) ?? text.match(NOTE_VERB);
@@ -190,6 +286,25 @@ export function parseLocalCommand(raw: string): LocalIntent | null {
     return { kind: "wasteQuery", ...(fraction ? { fraction } : {}) };
   }
 
+  // 7. Plan lekcji („o której kończy Lena”, „ile lekcji ma Tomek”, „plan lekcji”).
+  // Dane są w pamięci dashboardu — odpowiedź w milisekundy, bez AI.
+  // Detekcja rodzaju na tekście bez ogonków: dyktowanie (STT) często zwraca
+  // „o ktorej konczy” zamiast „o której kończy” — obie formy muszą działać.
+  if (/lekcj|kończy|konczy|szkoł|szkol|szkola/.test(t)) {
+    const day = parseLessonDay(text);
+    const child = parseLessonChild(text);
+    const f = foldPl(text);
+    if (/o\s+ktor|do\s+ktor|kiedy\s+konczy|kiedy\s+koniec|do\s+kiedy/.test(f)) {
+      return { kind: "lessonEnd", child, day };
+    }
+    if (/ile\s+lekcji|ile\s+ma\s+lekcji|ile\s+zajec/.test(f)) {
+      return { kind: "lessonCount", child, day };
+    }
+    if (/plan\s+lekcji|plan\s+lekcj|rozklad\s+lekcji|rozklad|co\s+ma\s+w\sskole|co\s+ma\s+jutro/.test(f)) {
+      return { kind: "lessonPlan", child, day };
+    }
+  }
+
   return null;
 }
 
@@ -206,6 +321,15 @@ export function intentSource(intent: LocalIntent): LocalSource {
       return "local-waste";
     case "addNote":
       return "local-note";
+    case "radioPlay":
+    case "radioStop":
+    case "volumeUp":
+    case "volumeDown":
+      return "local-radio";
+    case "lessonEnd":
+    case "lessonCount":
+    case "lessonPlan":
+      return "local-lessons";
   }
 }
 
