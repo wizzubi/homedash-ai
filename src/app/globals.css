@@ -169,6 +169,32 @@ input, textarea, select { touch-action: manipulation; }
   .home-footer { display: none; }
 }
 
+/* --- Tablet 7" w poziomie (ok. 1024×600): ciaśniej, ale czytelnie -------- */
+@media (orientation: landscape) and (min-width: 920px) and (max-width: 1180px) {
+  .home-shell { padding: 10px 12px 6px; }
+  .home-header { height: 48px; min-height: 48px; margin-bottom: 8px; }
+  .dashboard-grid { gap: 10px; }
+  .dashboard-side, .left-stack, .center-stack, .right-stack { gap: 10px; }
+  .hd-card { padding: 12px; border-radius: 18px; }
+  .hd-overline { font-size: 9px; letter-spacing: .11em; }
+  .home-footer { display: none; }
+  .school-card, .work-card, .tasks-card { min-height: 0; }
+}
+
+/* --- Slot kafelka (pozycjonowanie + tryb układania) ----------------------- */
+.tile-slot { min-height: 0; min-width: 0; }
+.tile-arranging > section {
+  outline: 1.5px dashed rgba(196, 181, 253, .5);
+  outline-offset: -1.5px;
+}
+
+/* --- Grube palce (kiosk dotykowy): większe cele dotykowe ------------------ */
+@media (pointer: coarse) {
+  .sched-nav-btn { min-width: 40px; min-height: 40px; }
+  .tile-tools button { min-width: 36px; min-height: 36px; }
+  .tile-tools button:disabled { opacity: .3; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;

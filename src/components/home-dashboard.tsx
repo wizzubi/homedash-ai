@@ -8,8 +8,10 @@ import {
   CalendarDays,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Clock3,
   Cloud,
   CloudDrizzle,
@@ -21,6 +23,7 @@ import {
   FileText,
   House,
   Leaf,
+  LayoutGrid,
   LoaderCircle,
   MapPin,
   MessageCircle,
@@ -32,6 +35,7 @@ import {
   Pin,
   Plus,
   Recycle,
+  RotateCcw,
   Send,
   Settings2,
   ShieldAlert,
@@ -46,6 +50,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  type CSSProperties,
   type FormEvent,
   type ReactNode,
   useCallback,
@@ -200,6 +205,46 @@ const TOOL_LABELS: Record<string, string> = {
   getExpiringDocuments: "odczyt · dokumenty",
 };
 
+/** Układane kafelki dashboardu — kolejność zapisywana w localStorage. */
+type TileId =
+  | "weather" | "waste" | "stats"
+  | "school" | "work"
+  | "tasks" | "notes" | "documents" | "assistant";
+type StackId = "left" | "center" | "right";
+const STACKS: StackId[] = ["left", "center", "right"];
+const ALL_TILES: TileId[] = ["weather", "waste", "stats", "school", "work", "tasks", "notes", "documents", "assistant"];
+
+function defaultTileOrder(): Record<StackId, TileId[]> {
+  return {
+    left: ["weather", "waste", "stats"],
+    center: ["school", "work"],
+    right: ["tasks", "notes", "documents", "assistant"],
+  };
+}
+
+const TILE_ORDER_KEY = "homedash:tile-order:v1";
+
+function loadTileOrder(): Record<StackId, TileId[]> {
+  const fallback = defaultTileOrder();
+  try {
+    if (typeof window === "undefined") return fallback;
+    const raw = window.localStorage.getItem(TILE_ORDER_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<Record<StackId, unknown>>;
+    const pick = (stack: StackId): TileId[] => {
+      const value = parsed[stack];
+      return Array.isArray(value) ? value.filter((id): id is TileId => typeof id === "string" && (ALL_TILES as string[]).includes(id)) : [];
+    };
+    const order: Record<StackId, TileId[]> = { left: pick("left"), center: pick("center"), right: pick("right") };
+    const seen = [...order.left, ...order.center, ...order.right];
+    // Układ ważny tylko, gdy zawiera dokładnie 9 znanych kafli, każdy raz.
+    if (seen.length !== ALL_TILES.length || new Set(seen).size !== ALL_TILES.length) return fallback;
+    return order;
+  } catch {
+    return fallback;
+  }
+}
+
 function GlassCard({
   children,
   className = "",
@@ -215,7 +260,7 @@ function GlassCard({
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.42, delay, ease: "easeOut" }}
-      className={`hd-card hd-card-hover flex min-h-0 flex-col p-4 ${className}`}
+      className={`hd-card hd-card-hover flex h-full min-h-0 flex-col p-4 ${className}`}
       {...props}
     >
       {children}
@@ -310,6 +355,47 @@ export default function HomeDashboard() {
   const [slideDir, setSlideDir] = useState(0);
   const touchX = useRef<number | null>(null);
   const workTouchX = useRef<number | null>(null);
+  // Przestawianie kafli: kolejność w localStorage, tryb układania w nagłówku.
+  const [tileOrder, setTileOrder] = useState<Record<StackId, TileId[]>>(loadTileOrder);
+  const [arranging, setArranging] = useState(false);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TILE_ORDER_KEY, JSON.stringify(tileOrder));
+    } catch {
+      /* tryb prywatny / brak miejsca — układ wraca do domyślnego */
+    }
+  }, [tileOrder]);
+
+  const moveTile = useCallback((stack: StackId, index: number, dir: "up" | "down" | "left" | "right") => {
+    setTileOrder((previous) => {
+      const next: Record<StackId, TileId[]> = { left: [...previous.left], center: [...previous.center], right: [...previous.right] };
+      const arr = next[stack];
+      if (dir === "up" && index > 0) {
+        [arr[index - 1], arr[index]] = [arr[index] as TileId, arr[index - 1] as TileId];
+      } else if (dir === "down" && index < arr.length - 1) {
+        [arr[index + 1], arr[index]] = [arr[index] as TileId, arr[index + 1] as TileId];
+      } else if (dir === "left" || dir === "right") {
+        const target = STACKS[STACKS.indexOf(stack) + (dir === "left" ? -1 : 1)];
+        if (!target) return previous;
+        const [item] = arr.splice(index, 1);
+        if (!item) return previous;
+        next[target].splice(Math.min(index, next[target].length), 0, item);
+      } else {
+        return previous;
+      }
+      return next;
+    });
+  }, []);
+
+  const resetTileOrder = useCallback(() => setTileOrder(defaultTileOrder()), []);
+
+  // Gdy stos ma inną liczbę kafli niż domyślnie, siatka fr dopasowuje wiersze.
+  const stackRowStyle = (stack: StackId): CSSProperties | undefined => {
+    const defaults = defaultTileOrder();
+    if (tileOrder[stack].length === defaults[stack].length) return undefined;
+    return { gridTemplateRows: `repeat(${tileOrder[stack].length}, minmax(0, 1fr))` };
+  };
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantText, setAssistantText] = useState("");
@@ -856,6 +942,281 @@ export default function HomeDashboard() {
       .sort((a, b) => new Date(a.pickupDate).getTime() - new Date(b.pickupDate).getTime())[0];
   }
 
+  // Kafelki jako węzły (domknięcia nad stanem) — pozycję nadaje tileOrder.
+  const tileNodes: Record<TileId, ReactNode> = {
+    weather: (
+      <GlassCard delay={0.04} className="weather-card hd-glow-blue">
+        <SectionHeading icon={MapPin} label="Pogoda · teraz" accent="text-sky-300" />
+        <div className="flex min-h-0 flex-1 items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="truncate text-[11px] font-medium text-slate-400">{city}</p>
+            <div className="mt-1 flex items-start gap-0.5">
+              <span className="text-[clamp(2.7rem,4vw,4.2rem)] font-light leading-none tracking-[-.08em] text-slate-50">{weather?.current?.temperature_2m != null ? Math.round(weather.current.temperature_2m) : "—"}</span>
+              <span className="mt-1 text-2xl font-light text-slate-400">°</span>
+            </div>
+            <p className="mt-2 text-[11px] font-medium text-slate-300">{weatherUnavailable ? "Pogoda niedostępna" : weather ? weatherView.label : "Pobieram prognozę…"}</p>
+            {weather?.current?.apparent_temperature != null && <p className="mt-1 text-[9px] text-slate-500">Odczuwalna {Math.round(weather.current.apparent_temperature)}°</p>}
+          </div>
+          <div className="relative mr-1 grid h-[76px] w-[76px] shrink-0 place-items-center rounded-[24px] border border-white/[.06] bg-gradient-to-br from-white/[.055] to-transparent sm:h-[92px] sm:w-[92px]">
+            <span className={`absolute inset-2 rounded-[20px] blur-2xl opacity-20 ${weatherView.tint.replace("text-", "bg-")}`} />
+            <WeatherIcon className={`relative ${weatherView.tint}`} size={49} strokeWidth={1.2} />
+          </div>
+        </div>
+        <div className="mt-3 flex shrink-0 items-center justify-between border-t border-white/[.055] pt-2.5 text-[9px] text-slate-500">
+          <span className="flex items-center gap-1.5"><Thermometer size={12} className="text-rose-200/70" /> Max <b className="font-medium text-slate-300">{weather?.daily?.temperature_2m_max?.[0] != null ? `${Math.round(weather.daily.temperature_2m_max[0])}°` : "—"}</b></span>
+          <span className="flex items-center gap-1.5"><Droplets size={12} className="text-sky-200/70" /> {weather?.current?.relative_humidity_2m != null ? `${weather.current.relative_humidity_2m}%` : "—"}</span>
+          <span className="flex items-center gap-1.5"><Wind size={12} className="text-slate-400" /> {weather?.current?.wind_speed_10m != null ? `${Math.round(weather.current.wind_speed_10m)} km/h` : "—"}</span>
+        </div>
+      </GlassCard>
+    ),
+    waste: (
+      <GlassCard delay={0.1} className="waste-card hd-glow-mint">
+        <SectionHeading icon={Recycle} label="Najbliższy odbiór" accent="text-emerald-300" action={<Link href="/admin" className="rounded-lg p-1 text-slate-600 transition hover:bg-white/5 hover:text-slate-300" title="Zarządzaj harmonogramem"><ArrowRight size={14} /></Link>} />
+        <div className="mb-2 flex items-center gap-1.5 text-[9px] text-slate-500"><span className="h-1.5 w-1.5 rounded-full bg-emerald-300" /> Harmonogram domowy <span className="ml-auto">{dashboard.garbage.length} terminów</span></div>
+        <div className="hd-scroll flex min-h-0 flex-1 flex-col justify-between gap-1">
+          {FRACTIONS.map(({ key, label, Icon, color, glow }) => {
+            const next = nearestPickup(key);
+            const days = next ? daysUntil(next.pickupDate, currentTime) : null;
+            return (
+              <div key={key} className="flex min-h-[34px] items-center gap-2 rounded-xl px-1.5 py-1 transition hover:bg-white/[.025]">
+                <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-[10px] ${glow} ${color}`}><Icon size={14} strokeWidth={1.8} /></span>
+                <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-slate-300">{label}</span>
+                <span className={`shrink-0 text-right text-[9px] ${days === 0 ? "font-semibold text-emerald-200" : "text-slate-500"}`}>
+                  {next ? days === 0 ? "Dziś" : days === 1 ? "Jutro" : `${days} dni` : "Brak daty"}
+                  {next && <span className="ml-1 text-slate-600">· {new Date(next.pickupDate).toLocaleDateString("pl-PL", { day: "2-digit", month: "short" }).replace(".", "")}</span>}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-2 flex shrink-0 items-center gap-1.5 border-t border-white/[.055] pt-2 text-[9px] text-slate-600"><CalendarDays size={12} /> Terminy aktualizowane w panelu administratora</div>
+      </GlassCard>
+    ),
+    stats: (
+      <GlassCard delay={0.16} className="stats-card hd-glow-blue">
+        <SectionHeading icon={Activity} label="Szybkie statystyki" accent="text-indigo-300" />
+        <div className="grid min-h-0 flex-1 grid-cols-2 gap-2">
+          <div className="rounded-xl border border-white/[.045] bg-white/[.025] px-3 py-2">
+            <p className="text-[8px] font-semibold tracking-[.11em] text-slate-500">TEN TYDZIEŃ</p>
+            <p className="mt-1 text-[clamp(1.3rem,2vw,1.8rem)] font-light leading-none tracking-[-.06em] text-slate-100">{formatHours(weekHours)}<span className="ml-1 text-[10px] text-slate-500">h</span></p>
+          </div>
+          <div className="rounded-xl border border-white/[.045] bg-white/[.025] px-3 py-2">
+            <p className="text-[8px] font-semibold tracking-[.11em] text-slate-500">W TYM MIESIĄCU</p>
+            <p className="mt-1 text-[clamp(1.3rem,2vw,1.8rem)] font-light leading-none tracking-[-.06em] text-slate-100">{formatHours(monthHours)}<span className="ml-1 text-[10px] text-slate-500">h</span></p>
+          </div>
+        </div>
+        <div className="mt-2 flex shrink-0 items-center gap-2 text-[9px] text-slate-500">
+          <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800"><span className="block h-full rounded-full bg-gradient-to-r from-emerald-300/80 to-sky-300/80 transition-all" style={{ width: `${Math.min(100, (weekHours / 40) * 100)}%` }} /></span>
+          <span>cel tygodnia · 40 h</span>
+        </div>
+      </GlassCard>
+    ),
+    school: (
+      <GlassCard
+        delay={0.08}
+        className="school-card"
+        onTouchStart={(event) => { touchX.current = event.touches[0].clientX; }}
+        onTouchEnd={(event) => {
+          if (touchX.current === null) return;
+          const dx = event.changedTouches[0].clientX - touchX.current;
+          touchX.current = null;
+          if (Math.abs(dx) < 48) return;
+          stepScheduleDay(dx < 0 ? 1 : -1);
+        }}
+      >
+        <div className="mb-2 flex shrink-0 items-start justify-between gap-2">
+          <SectionHeading icon={CalendarDays} label={`Plan lekcji · ${scheduleLabel}`} accent="text-violet-300" action={<span className="hidden rounded-full border border-slate-700/70 px-2 py-1 text-[8px] font-semibold uppercase tracking-[.12em] text-slate-500 sm:inline">{viewedDate.toLocaleDateString("pl-PL", { weekday: "short", day: "numeric", month: "numeric" })}</span>} />
+          <div className="-mt-0.5 flex shrink-0 items-center gap-1">
+            <button onClick={() => stepScheduleDay(-1)} aria-label="Poprzedni dzień planu" title="Poprzedni dzień" className="hd-button sched-nav-btn rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-violet-100"><ChevronLeft size={15} /></button>
+            <button onClick={() => stepScheduleDay(1)} aria-label="Następny dzień planu" title="Następny dzień" className="hd-button sched-nav-btn rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-violet-100"><ChevronRight size={15} /></button>
+            <Link href="/admin" className="rounded-lg p-1.5 text-slate-600 hover:bg-white/5 hover:text-slate-300" title="Edytuj plan lekcji"><Settings2 size={13} /></Link>
+          </div>
+        </div>
+        <div className="hd-scroll-x mb-2 flex shrink-0 items-center gap-1.5">
+          {children.map((child, index) => (
+            <button key={child} onClick={() => setSelectedChild(child)} className={`hd-button rounded-full border px-3 py-1 text-[9px] font-semibold ${activeChild === child ? index % 2 === 0 ? "border-violet-300/25 bg-violet-300/10 text-violet-100" : "border-sky-300/25 bg-sky-300/10 text-sky-100" : "border-slate-800 bg-slate-950/20 text-slate-500 hover:text-slate-300"}`}>
+              <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${index % 2 === 0 ? "bg-violet-300" : "bg-sky-300"}`} />{child}
+            </button>
+          ))}
+          <span className="ml-auto flex items-center gap-1 text-[9px] text-slate-600">{!viewingToday && <button onClick={resetScheduleDay} className="hd-button mr-1 rounded-full border border-violet-300/20 bg-violet-300/[.07] px-2 py-0.5 text-[8px] font-semibold text-violet-100 transition hover:bg-violet-300/[.14]">Dziś</button>}<Clock3 size={11} /> {now ? displayTime(now) : "--:--"}</span>
+        </div>
+        {(currentLesson || nextLesson) && <div className={`mb-2 flex shrink-0 items-center gap-2 rounded-xl border px-2.5 py-1.5 ${currentLesson ? "border-emerald-300/12 bg-emerald-300/[.045]" : "border-white/[.045] bg-white/[.02]"}`}>
+          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${currentLesson ? "status-breathe bg-emerald-200" : "bg-slate-500"}`} />
+          <span className="truncate text-[9px] text-slate-300">{currentLesson ? <><b className="font-semibold text-emerald-100">Teraz: {currentLesson.subject}</b> · do końca {Math.max(0, minutesOfDay(currentLesson.endTime) - currentTime.getHours() * 60 - currentTime.getMinutes())} min</> : <>Następna: <b className="font-semibold text-slate-200">{nextLesson?.subject}</b> · {nextLesson?.startTime}</>}</span>
+          {currentLesson?.classroom && <span className="ml-auto shrink-0 text-[8px] text-slate-500">s. {currentLesson.classroom}</span>}
+        </div>}
+        <div className="hd-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5">
+          {!dataReady ? <div className="grid h-full place-items-center text-[11px] text-slate-600">Ładuję plan dnia…</div> : viewedLessons.length ? (
+          <motion.div key={`${activeChild}-${dateKey(viewedDate)}`} initial={{ opacity: 0, x: slideDir === 0 ? 0 : 22 * slideDir }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.22, ease: "easeOut" }} className="space-y-1">
+            {viewedLessons.slice(0, 8).map((lesson, index) => {
+            const active = lesson.id === currentLesson?.id;
+            const past = dayOffset < 0 || (dayOffset === 0 && minutesOfDay(lesson.endTime) <= nowMinutes);
+            return (
+              <div key={lesson.id} className={`flex min-h-[42px] items-center gap-2.5 rounded-xl border px-2.5 py-1.5 transition ${active ? "border-emerald-200/20 bg-emerald-200/[.075] shadow-[0_0_22px_rgba(134,239,172,.035)]" : past ? "border-transparent bg-white/[.012] opacity-50" : "border-transparent bg-white/[.025] hover:border-white/[.055]"}`}>
+                <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg border text-[10px] font-bold tabular-nums ${active ? "border-emerald-200/40 bg-emerald-200/15 text-emerald-100" : "border-violet-300/15 bg-violet-300/[.07] text-violet-200/90"}`}>{index + 1}</span>
+                <span className="w-[40px] shrink-0 font-mono leading-[1.3]">
+                  <span className={`block text-[9px] tabular-nums ${active ? "text-emerald-100" : "text-slate-300"}`}>{lesson.startTime}</span>
+                  <span className="block text-[8px] tabular-nums text-slate-600">{lesson.endTime}</span>
+                </span>
+                <span className={`h-8 w-px shrink-0 ${active ? "bg-emerald-200/40" : "bg-slate-700/70"}`} />
+                <span className="min-w-0 flex-1">
+                  <span className={`block truncate text-[11px] font-semibold leading-tight ${active ? "text-emerald-50" : "text-slate-200"}`}>{lesson.subject}</span>
+                  <span className="mt-0.5 block text-[8px] text-slate-600">{lesson.startTime}–{lesson.endTime}{lesson.classroom ? ` · Sala: ${lesson.classroom}` : ""}</span>
+                </span>
+                {lesson.classroom && <span className={`shrink-0 rounded-lg border px-1.5 py-1 text-[8px] font-semibold ${active ? "border-emerald-200/25 bg-emerald-200/10 text-emerald-100" : "border-white/[.06] bg-white/[.03] text-slate-400"}`}>Sala: {lesson.classroom}</span>}
+                {active && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-200" />}
+              </div>
+            );
+            })}
+          </motion.div>
+          ) : <div className="grid h-full place-items-center rounded-xl border border-dashed border-slate-800/80 px-4 text-center text-[11px] text-slate-500">{isoWeekday(viewedDate) > 5 ? "Weekend bez lekcji · czas na odpoczynek 🌿" : viewingToday ? "Dziś nie ma zaplanowanych lekcji." : `Brak lekcji w planie na ${scheduleLabel}.`}</div>}
+        </div>
+        <div className="mt-2 flex shrink-0 items-center justify-between border-t border-white/[.05] pt-2 text-[9px] text-slate-600"><span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-emerald-200" /> Trwająca lekcja</span><Link href="/admin" className="flex items-center gap-1 text-slate-500 transition hover:text-emerald-100">Edytuj plan <ArrowRight size={11} /></Link></div>
+      </GlassCard>
+    ),
+    work: (
+      <GlassCard
+        delay={0.14}
+        className="work-card hd-glow-mint"
+        onTouchStart={(event) => { workTouchX.current = event.touches[0].clientX; }}
+        onTouchEnd={(event) => {
+          if (workTouchX.current === null) return;
+          const dx = event.changedTouches[0].clientX - workTouchX.current;
+          workTouchX.current = null;
+          if (Math.abs(dx) < 48) return;
+          stepScheduleDay(dx < 0 ? 1 : -1);
+        }}
+      >
+        <div className="mb-1 flex shrink-0 items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2"><span className="grid h-7 w-7 place-items-center rounded-[10px] bg-emerald-300/[.08] text-emerald-200"><Activity size={15} /></span><span className="hd-overline">Godziny pracy</span></div>
+            <motion.div key={dateKey(viewedDate)} initial={{ opacity: 0, x: slideDir === 0 ? 0 : 12 * slideDir }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2, ease: "easeOut" }} className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <span className="text-[clamp(1.8rem,3vw,2.5rem)] font-light leading-none tracking-[-.075em] text-slate-50">{formatHours(viewedDayHours)}<span className="ml-1 text-sm text-slate-400">h</span></span>
+              <span className="text-[9px] text-slate-500">{workDayLabel}{viewedDayLogs.length > 0 && ` · ${entriesLabel}`}</span>
+              {!viewingToday && <button onClick={resetScheduleDay} className="hd-button rounded-full border border-emerald-200/20 bg-emerald-200/[.07] px-2 py-0.5 text-[8px] font-semibold text-emerald-100 transition hover:bg-emerald-200/[.14]">Dziś</button>}
+              {viewedDayHours > 0 && <span className="flex items-center gap-0.5 text-[9px] font-medium text-emerald-200"><Check size={11} /> zapisano</span>}
+            </motion.div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button onClick={() => stepScheduleDay(-1)} aria-label="Poprzedni dzień godzin pracy" title="Poprzedni dzień" className="hd-button sched-nav-btn rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-emerald-100"><ChevronLeft size={15} /></button>
+            <button onClick={() => stepScheduleDay(1)} aria-label="Następny dzień godzin pracy" title="Następny dzień" className="hd-button sched-nav-btn rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-emerald-100"><ChevronRight size={15} /></button>
+            <button onClick={() => setComposer("work")} className="hd-button flex items-center gap-1.5 rounded-xl border border-emerald-200/15 bg-emerald-200/[.07] px-2.5 py-2 text-[9px] font-semibold text-emerald-100 hover:bg-emerald-200/[.13] sm:px-3"><Plus size={13} /> Dodaj wpis</button>
+          </div>
+        </div>
+        <div className="mb-1 flex shrink-0 items-center justify-between"><p className="text-[9px] text-slate-500">TYDZIEŃ · {formatHours(weekHours)} h <span className="mx-1 text-slate-700">/</span> 40 h</p><Link href="/admin" className="text-[9px] text-slate-600 hover:text-slate-300">rejestr →</Link></div>
+        <WeekChart workLogs={dashboard.workLogs} now={currentTime} />
+      </GlassCard>
+    ),
+    tasks: (
+      <GlassCard delay={0.12} className="tasks-card">
+        <SectionHeading icon={CheckCircle2} label="Zadania rodziny" accent="text-amber-200" action={<button onClick={() => setComposer("task")} className="hd-button grid h-7 w-7 place-items-center rounded-lg border border-slate-700/60 bg-white/[.025] text-slate-400 hover:border-emerald-200/25 hover:text-emerald-100" title="Dodaj zadanie"><Plus size={14} /></button>} />
+        <div className="mb-2 flex shrink-0 items-center justify-between text-[9px] text-slate-500"><span>{openTasks.length} otwarte <span className="mx-1 text-slate-700">·</span> {dashboard.tasks.filter((task) => task.isCompleted).length} ukończone</span><span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-amber-200" /> domowa lista</span></div>
+        <div className="hd-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5">
+          {!dataReady ? <p className="py-3 text-center text-[10px] text-slate-600">Ładuję zadania…</p> : dashboard.tasks.slice(0, 6).map((task) => (
+            <div key={task.id} className={`group flex min-h-[34px] items-center gap-2 rounded-xl px-1.5 py-1 transition hover:bg-white/[.025] ${task.isCompleted ? "opacity-50" : ""}`}>
+              <button onClick={() => void toggleTask(task)} aria-label={task.isCompleted ? "Oznacz jako niewykonane" : "Oznacz jako wykonane"} className={`grid h-[17px] w-[17px] shrink-0 place-items-center rounded-[6px] border transition ${task.isCompleted ? "border-emerald-200/50 bg-emerald-200/20 text-emerald-100" : "border-slate-600 text-transparent hover:border-emerald-200/60"}`}>{task.isCompleted && <Check size={11} />}</button>
+              <div className="min-w-0 flex-1">
+                <p className={`truncate text-[10px] font-medium ${task.isCompleted ? "text-slate-500 line-through" : "text-slate-300"}`}>{task.title}</p>
+                <p className="mt-0.5 truncate text-[8px] text-slate-600">{task.assignedTo || "Wszyscy"}{task.dueDate && ` · ${daysUntil(task.dueDate, currentTime) === 0 ? "dzisiaj" : new Date(task.dueDate).toLocaleDateString("pl-PL", { day: "numeric", month: "short" })}`}</p>
+              </div>
+              <button onClick={() => void removeTask(task)} aria-label={`Usuń zadanie ${task.title}`} className="rounded-md p-1 text-slate-700 opacity-0 transition hover:bg-rose-400/10 hover:text-rose-200 group-hover:opacity-100 focus:opacity-100"><X size={12} /></button>
+            </div>
+          ))}
+          {dataReady && dashboard.tasks.length === 0 && <p className="py-4 text-center text-[10px] text-slate-600">Wszystko zrobione. Czas na herbatę ☕</p>}
+        </div>
+        <button onClick={() => setComposer("task")} className="mt-2 flex shrink-0 items-center gap-1.5 border-t border-white/[.05] pt-2 text-[9px] font-medium text-slate-500 transition hover:text-amber-100"><Plus size={12} /> Dodaj do listy <span className="ml-auto text-slate-700">szybki wpis</span></button>
+      </GlassCard>
+    ),
+    notes: (
+      <GlassCard delay={0.18} className="notes-card">
+        <SectionHeading icon={NotebookPen} label="Przypięte notatki" accent="text-amber-200" action={<button onClick={() => setComposer("note")} className="hd-button grid h-7 w-7 place-items-center rounded-lg border border-slate-700/60 bg-white/[.025] text-slate-400 hover:border-amber-200/25 hover:text-amber-100" title="Dodaj notatkę"><Plus size={14} /></button>} />
+        <div className="hd-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-0.5">
+          {recentNotes.map((note) => {
+            const colors: Record<string, string> = {
+              amber: "border-amber-200/10 bg-amber-200/[.055]",
+              violet: "border-violet-200/10 bg-violet-200/[.055]",
+              mint: "border-emerald-200/10 bg-emerald-200/[.055]",
+              sky: "border-sky-200/10 bg-sky-200/[.055]",
+              rose: "border-rose-200/10 bg-rose-200/[.055]",
+            };
+            return (
+              <div key={note.id} className={`group relative rounded-xl border px-2.5 py-2 ${colors[note.color] || colors.amber}`}>
+                <div className="flex items-center gap-1.5 pr-10"><span className="truncate text-[9px] font-semibold text-slate-200">{note.title || "Notatka"}</span><span className="ml-auto shrink-0 text-[8px] text-slate-600">{new Date(note.createdAt).toLocaleDateString("pl-PL", { day: "numeric", month: "short" })}</span></div>
+                <p className="mt-1 line-clamp-2 text-[9px] leading-[1.45] text-slate-400">{note.content}</p>
+                <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+                  <button onClick={() => void toggleNotePin(note)} className="rounded-md p-1 text-slate-500 hover:bg-white/10 hover:text-amber-100" title={note.isPinned ? "Odepnij" : "Przypnij"}><Pin size={10} /></button>
+                  <button onClick={() => void removeNote(note)} className="rounded-md p-1 text-slate-500 hover:bg-rose-300/10 hover:text-rose-200" title="Usuń notatkę"><X size={10} /></button>
+                </div>
+              </div>
+            );
+          })}
+          {dataReady && recentNotes.length === 0 && <div className="grid h-full min-h-[58px] place-items-center text-[10px] text-slate-600">Pusto — przypnij ważną myśl.</div>}
+        </div>
+        <button onClick={() => setComposer("note")} className="mt-2 flex shrink-0 items-center gap-1.5 border-t border-white/[.05] pt-2 text-[9px] font-medium text-slate-500 transition hover:text-amber-100"><Plus size={12} /> Zostaw wiadomość rodzinie</button>
+      </GlassCard>
+    ),
+    documents: (
+      <GlassCard delay={0.22} className="documents-card hd-glow-coral">
+        <SectionHeading icon={FileText} label="Ważne dokumenty" accent="text-rose-200" action={<Link href="/admin" className="rounded-lg p-1 text-slate-600 hover:bg-white/5 hover:text-slate-300" title="Zarządzaj dokumentami"><ArrowRight size={13} /></Link>} />
+        <div className="mb-1 flex shrink-0 items-center gap-1.5 text-[9px] text-slate-600"><ShieldAlert size={11} className="text-rose-200/70" /> Alert ważności · najbliższe terminy</div>
+        <div className="hd-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5">
+          {!dataReady ? <p className="py-3 text-center text-[10px] text-slate-600">Sprawdzam terminy…</p> : urgentDocuments.map((document) => {
+            const days = daysUntil(document.expirationDate, currentTime);
+            const urgent = days <= 30;
+            return (
+              <div key={document.id} className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${urgent ? "border border-rose-300/10 bg-rose-300/[.045]" : "bg-white/[.02]"}`}>
+                <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-[9px] ${urgent ? "bg-rose-300/10 text-rose-200" : "bg-white/[.04] text-slate-400"}`}><FileText size={13} /></span>
+                <span className="min-w-0 flex-1"><span className="block truncate text-[9px] font-medium text-slate-300">{document.title}</span><span className="mt-0.5 block truncate text-[8px] text-slate-600">{document.category} <span className="mx-1">·</span> {new Date(document.expirationDate).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "numeric" })}</span></span>
+                <span className={`shrink-0 text-[9px] font-semibold ${urgent ? "text-rose-200" : "text-slate-500"}`}>{days < 0 ? "po terminie" : days === 0 ? "dziś" : `${days} dni`}</span>
+              </div>
+            );
+          })}
+          {dataReady && urgentDocuments.length === 0 && <p className="py-3 text-center text-[10px] text-slate-600">Brak zapisanych terminów.</p>}
+        </div>
+      </GlassCard>
+    ),
+    assistant: (
+      <GlassCard delay={0.26} className="assistant-card border-emerald-200/[.09] bg-[linear-gradient(135deg,rgba(19,38,36,.72),rgba(14,20,32,.84))]">
+        <button onClick={() => setAssistantOpen(true)} className="group flex min-h-0 flex-1 items-center gap-3 text-left">
+          <span className={`relative grid h-10 w-10 shrink-0 place-items-center rounded-[14px] border border-emerald-200/10 bg-emerald-200/[.08] text-emerald-100 ${wakeListening ? "status-breathe" : ""}`}><Sparkles size={18} strokeWidth={1.5} /><span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#14201f] bg-emerald-300" /></span>
+          <span className="min-w-0 flex-1"><span className="block text-[9px] font-bold tracking-[.12em] text-emerald-100">ASYSTENT DOMOWY</span><span className="mt-1 block truncate text-[9px] text-slate-500">{wakeListening ? `Nasłuchuję „${wakeWord}”` : voiceStatus}</span></span>
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-emerald-200/10 bg-emerald-200/[.055] text-emerald-100 transition group-hover:bg-emerald-200/[.11]"><MessageCircle size={15} /></span>
+        </button>
+        <p className="mt-2 shrink-0 border-t border-white/[.055] pt-2 text-[8px] text-slate-600">Powiedz <b className="font-medium text-slate-400">„{wakeWord}”</b>, aby rozpocząć.</p>
+      </GlassCard>
+    ),
+  };
+
+  // Render stosu kolumny: sloty w kolejności z tileOrder + pasek układania.
+  const renderStack = (stack: StackId) => tileOrder[stack].map((id, index) => {
+    const stackIndex = STACKS.indexOf(stack);
+    const arr = tileOrder[stack];
+    const tool = (dir: "up" | "down" | "left" | "right", label: string, Icon: typeof ChevronUp, disabled: boolean) => (
+      <button
+        onClick={() => moveTile(stack, index, dir)}
+        disabled={disabled}
+        aria-label={label}
+        title={label}
+        className="grid place-items-center rounded-md p-1 text-slate-300 transition hover:bg-white/10 hover:text-violet-100 disabled:opacity-30 disabled:hover:bg-transparent"
+      >
+        <Icon size={13} />
+      </button>
+    );
+    return (
+      <div key={id} className={`tile-slot relative${arranging ? " tile-arranging" : ""}`}>
+        {tileNodes[id]}
+        {arranging && (
+          <div className="tile-tools absolute right-2 top-2 z-20 flex gap-1 rounded-lg border border-violet-300/20 bg-slate-950/90 p-1 shadow-lg" role="toolbar" aria-label="Przestaw kafelek">
+            {tool("up", "W górę", ChevronUp, index === 0)}
+            {tool("down", "W dół", ChevronDown, index === arr.length - 1)}
+            {tool("left", "Do kolumny w lewo", ChevronLeft, stackIndex === 0)}
+            {tool("right", "Do kolumny w prawo", ChevronRight, stackIndex === STACKS.length - 1)}
+          </div>
+        )}
+      </div>
+    );
+  });
+
   return (
     <main className="home-shell">
       <header className="home-header flex h-14 items-center justify-between gap-3 px-0.5">
@@ -883,6 +1244,14 @@ export default function HomeDashboard() {
             {now ? displayTime(now) : "--:--"}
           </div>
           <button
+            onClick={() => setArranging((previous) => !previous)}
+            aria-label={arranging ? "Zakończ układanie kafelków" : "Ułóż kafelki"}
+            title={arranging ? "Zakończ układanie" : "Ułóż kafelki na ekranie"}
+            className={`hd-button relative grid h-10 w-10 shrink-0 place-items-center rounded-xl border ${arranging ? "border-violet-300/30 bg-violet-300/10 text-violet-100" : "border-slate-700/70 bg-slate-900/70 text-slate-300 hover:border-violet-200/25 hover:text-violet-100"}`}
+          >
+            <LayoutGrid size={17} />
+          </button>
+          <button
             onClick={() => { setWakeListening((previous) => !previous); setVoiceStatus(wakeListening ? "Asystent gotowy" : "Słucham hasła wybudzającego"); }}
             aria-label={wakeListening ? "Wyłącz nasłuchiwanie" : "Włącz nasłuchiwanie głosowe"}
             title={wakeListening ? `Nasłuchiwanie: ${wakeWord}` : `Włącz mikrofon · ${wakeWord}`}
@@ -900,242 +1269,14 @@ export default function HomeDashboard() {
       {loadError && <div className="mb-2 flex items-center justify-between rounded-xl border border-rose-300/15 bg-rose-400/[.06] px-3 py-2 text-xs text-rose-200"><span>{loadError}</span><button onClick={() => void refreshDashboard()} className="underline underline-offset-2">Spróbuj ponownie</button></div>}
 
       <div className="dashboard-grid">
-        <div className="dashboard-side left-stack">
-          <GlassCard delay={0.04} className="weather-card hd-glow-blue">
-            <SectionHeading icon={MapPin} label="Pogoda · teraz" accent="text-sky-300" />
-            <div className="flex min-h-0 flex-1 items-center justify-between gap-2">
-              <div className="min-w-0">
-                <p className="truncate text-[11px] font-medium text-slate-400">{city}</p>
-                <div className="mt-1 flex items-start gap-0.5">
-                  <span className="text-[clamp(2.7rem,4vw,4.2rem)] font-light leading-none tracking-[-.08em] text-slate-50">{weather?.current?.temperature_2m != null ? Math.round(weather.current.temperature_2m) : "—"}</span>
-                  <span className="mt-1 text-2xl font-light text-slate-400">°</span>
-                </div>
-                <p className="mt-2 text-[11px] font-medium text-slate-300">{weatherUnavailable ? "Pogoda niedostępna" : weather ? weatherView.label : "Pobieram prognozę…"}</p>
-                {weather?.current?.apparent_temperature != null && <p className="mt-1 text-[9px] text-slate-500">Odczuwalna {Math.round(weather.current.apparent_temperature)}°</p>}
-              </div>
-              <div className="relative mr-1 grid h-[76px] w-[76px] shrink-0 place-items-center rounded-[24px] border border-white/[.06] bg-gradient-to-br from-white/[.055] to-transparent sm:h-[92px] sm:w-[92px]">
-                <span className={`absolute inset-2 rounded-[20px] blur-2xl opacity-20 ${weatherView.tint.replace("text-", "bg-")}`} />
-                <WeatherIcon className={`relative ${weatherView.tint}`} size={49} strokeWidth={1.2} />
-              </div>
-            </div>
-            <div className="mt-3 flex shrink-0 items-center justify-between border-t border-white/[.055] pt-2.5 text-[9px] text-slate-500">
-              <span className="flex items-center gap-1.5"><Thermometer size={12} className="text-rose-200/70" /> Max <b className="font-medium text-slate-300">{weather?.daily?.temperature_2m_max?.[0] != null ? `${Math.round(weather.daily.temperature_2m_max[0])}°` : "—"}</b></span>
-              <span className="flex items-center gap-1.5"><Droplets size={12} className="text-sky-200/70" /> {weather?.current?.relative_humidity_2m != null ? `${weather.current.relative_humidity_2m}%` : "—"}</span>
-              <span className="flex items-center gap-1.5"><Wind size={12} className="text-slate-400" /> {weather?.current?.wind_speed_10m != null ? `${Math.round(weather.current.wind_speed_10m)} km/h` : "—"}</span>
-            </div>
-          </GlassCard>
-
-          <GlassCard delay={0.1} className="waste-card hd-glow-mint">
-            <SectionHeading icon={Recycle} label="Najbliższy odbiór" accent="text-emerald-300" action={<Link href="/admin" className="rounded-lg p-1 text-slate-600 transition hover:bg-white/5 hover:text-slate-300" title="Zarządzaj harmonogramem"><ArrowRight size={14} /></Link>} />
-            <div className="mb-2 flex items-center gap-1.5 text-[9px] text-slate-500"><span className="h-1.5 w-1.5 rounded-full bg-emerald-300" /> Harmonogram domowy <span className="ml-auto">{dashboard.garbage.length} terminów</span></div>
-            <div className="hd-scroll flex min-h-0 flex-1 flex-col justify-between gap-1">
-              {FRACTIONS.map(({ key, label, Icon, color, glow }) => {
-                const next = nearestPickup(key);
-                const days = next ? daysUntil(next.pickupDate, currentTime) : null;
-                return (
-                  <div key={key} className="flex min-h-[34px] items-center gap-2 rounded-xl px-1.5 py-1 transition hover:bg-white/[.025]">
-                    <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-[10px] ${glow} ${color}`}><Icon size={14} strokeWidth={1.8} /></span>
-                    <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-slate-300">{label}</span>
-                    <span className={`shrink-0 text-right text-[9px] ${days === 0 ? "font-semibold text-emerald-200" : "text-slate-500"}`}>
-                      {next ? days === 0 ? "Dziś" : days === 1 ? "Jutro" : `${days} dni` : "Brak daty"}
-                      {next && <span className="ml-1 text-slate-600">· {new Date(next.pickupDate).toLocaleDateString("pl-PL", { day: "2-digit", month: "short" }).replace(".", "")}</span>}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="mt-2 flex shrink-0 items-center gap-1.5 border-t border-white/[.055] pt-2 text-[9px] text-slate-600"><CalendarDays size={12} /> Terminy aktualizowane w panelu administratora</div>
-          </GlassCard>
-
-          <GlassCard delay={0.16} className="stats-card hd-glow-blue">
-            <SectionHeading icon={Activity} label="Szybkie statystyki" accent="text-indigo-300" />
-            <div className="grid min-h-0 flex-1 grid-cols-2 gap-2">
-              <div className="rounded-xl border border-white/[.045] bg-white/[.025] px-3 py-2">
-                <p className="text-[8px] font-semibold tracking-[.11em] text-slate-500">TEN TYDZIEŃ</p>
-                <p className="mt-1 text-[clamp(1.3rem,2vw,1.8rem)] font-light leading-none tracking-[-.06em] text-slate-100">{formatHours(weekHours)}<span className="ml-1 text-[10px] text-slate-500">h</span></p>
-              </div>
-              <div className="rounded-xl border border-white/[.045] bg-white/[.025] px-3 py-2">
-                <p className="text-[8px] font-semibold tracking-[.11em] text-slate-500">W TYM MIESIĄCU</p>
-                <p className="mt-1 text-[clamp(1.3rem,2vw,1.8rem)] font-light leading-none tracking-[-.06em] text-slate-100">{formatHours(monthHours)}<span className="ml-1 text-[10px] text-slate-500">h</span></p>
-              </div>
-            </div>
-            <div className="mt-2 flex shrink-0 items-center gap-2 text-[9px] text-slate-500">
-              <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800"><span className="block h-full rounded-full bg-gradient-to-r from-emerald-300/80 to-sky-300/80 transition-all" style={{ width: `${Math.min(100, (weekHours / 40) * 100)}%` }} /></span>
-              <span>cel tygodnia · 40 h</span>
-            </div>
-          </GlassCard>
+        <div className="dashboard-side left-stack" style={stackRowStyle("left")}>
+          {renderStack("left")}
         </div>
-
-        <div className="dashboard-side center-stack">
-          <GlassCard
-            delay={0.08}
-            className="school-card"
-            onTouchStart={(event) => { touchX.current = event.touches[0].clientX; }}
-            onTouchEnd={(event) => {
-              if (touchX.current === null) return;
-              const dx = event.changedTouches[0].clientX - touchX.current;
-              touchX.current = null;
-              if (Math.abs(dx) < 48) return;
-              stepScheduleDay(dx < 0 ? 1 : -1);
-            }}
-          >
-            <div className="mb-2 flex shrink-0 items-start justify-between gap-2">
-              <SectionHeading icon={CalendarDays} label={`Plan lekcji · ${scheduleLabel}`} accent="text-violet-300" action={<span className="hidden rounded-full border border-slate-700/70 px-2 py-1 text-[8px] font-semibold uppercase tracking-[.12em] text-slate-500 sm:inline">{viewedDate.toLocaleDateString("pl-PL", { weekday: "short", day: "numeric", month: "numeric" })}</span>} />
-              <div className="-mt-0.5 flex shrink-0 items-center gap-1">
-                <button onClick={() => stepScheduleDay(-1)} aria-label="Poprzedni dzień planu" title="Poprzedni dzień" className="hd-button rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-violet-100"><ChevronLeft size={15} /></button>
-                <button onClick={() => stepScheduleDay(1)} aria-label="Następny dzień planu" title="Następny dzień" className="hd-button rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-violet-100"><ChevronRight size={15} /></button>
-                <Link href="/admin" className="rounded-lg p-1.5 text-slate-600 hover:bg-white/5 hover:text-slate-300" title="Edytuj plan lekcji"><Settings2 size={13} /></Link>
-              </div>
-            </div>
-            <div className="hd-scroll-x mb-2 flex shrink-0 items-center gap-1.5">
-              {children.map((child, index) => (
-                <button key={child} onClick={() => setSelectedChild(child)} className={`hd-button rounded-full border px-3 py-1 text-[9px] font-semibold ${activeChild === child ? index % 2 === 0 ? "border-violet-300/25 bg-violet-300/10 text-violet-100" : "border-sky-300/25 bg-sky-300/10 text-sky-100" : "border-slate-800 bg-slate-950/20 text-slate-500 hover:text-slate-300"}`}>
-                  <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${index % 2 === 0 ? "bg-violet-300" : "bg-sky-300"}`} />{child}
-                </button>
-              ))}
-              <span className="ml-auto flex items-center gap-1 text-[9px] text-slate-600">{!viewingToday && <button onClick={resetScheduleDay} className="hd-button mr-1 rounded-full border border-violet-300/20 bg-violet-300/[.07] px-2 py-0.5 text-[8px] font-semibold text-violet-100 transition hover:bg-violet-300/[.14]">Dziś</button>}<Clock3 size={11} /> {now ? displayTime(now) : "--:--"}</span>
-            </div>
-            {(currentLesson || nextLesson) && <div className={`mb-2 flex shrink-0 items-center gap-2 rounded-xl border px-2.5 py-1.5 ${currentLesson ? "border-emerald-300/12 bg-emerald-300/[.045]" : "border-white/[.045] bg-white/[.02]"}`}>
-              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${currentLesson ? "status-breathe bg-emerald-200" : "bg-slate-500"}`} />
-              <span className="truncate text-[9px] text-slate-300">{currentLesson ? <><b className="font-semibold text-emerald-100">Teraz: {currentLesson.subject}</b> · do końca {Math.max(0, minutesOfDay(currentLesson.endTime) - currentTime.getHours() * 60 - currentTime.getMinutes())} min</> : <>Następna: <b className="font-semibold text-slate-200">{nextLesson?.subject}</b> · {nextLesson?.startTime}</>}</span>
-              {currentLesson?.classroom && <span className="ml-auto shrink-0 text-[8px] text-slate-500">s. {currentLesson.classroom}</span>}
-            </div>}
-            <div className="hd-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5">
-              {!dataReady ? <div className="grid h-full place-items-center text-[11px] text-slate-600">Ładuję plan dnia…</div> : viewedLessons.length ? (
-              <motion.div key={`${activeChild}-${dateKey(viewedDate)}`} initial={{ opacity: 0, x: slideDir === 0 ? 0 : 22 * slideDir }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.22, ease: "easeOut" }} className="space-y-1">
-                {viewedLessons.slice(0, 8).map((lesson, index) => {
-                const active = lesson.id === currentLesson?.id;
-                const past = dayOffset < 0 || (dayOffset === 0 && minutesOfDay(lesson.endTime) <= nowMinutes);
-                return (
-                  <div key={lesson.id} className={`flex min-h-[42px] items-center gap-2.5 rounded-xl border px-2.5 py-1.5 transition ${active ? "border-emerald-200/20 bg-emerald-200/[.075] shadow-[0_0_22px_rgba(134,239,172,.035)]" : past ? "border-transparent bg-white/[.012] opacity-50" : "border-transparent bg-white/[.025] hover:border-white/[.055]"}`}>
-                    <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg border text-[10px] font-bold tabular-nums ${active ? "border-emerald-200/40 bg-emerald-200/15 text-emerald-100" : "border-violet-300/15 bg-violet-300/[.07] text-violet-200/90"}`}>{index + 1}</span>
-                    <span className="w-[40px] shrink-0 font-mono leading-[1.3]">
-                      <span className={`block text-[9px] tabular-nums ${active ? "text-emerald-100" : "text-slate-300"}`}>{lesson.startTime}</span>
-                      <span className="block text-[8px] tabular-nums text-slate-600">{lesson.endTime}</span>
-                    </span>
-                    <span className={`h-8 w-px shrink-0 ${active ? "bg-emerald-200/40" : "bg-slate-700/70"}`} />
-                    <span className="min-w-0 flex-1">
-                      <span className={`block truncate text-[11px] font-semibold leading-tight ${active ? "text-emerald-50" : "text-slate-200"}`}>{lesson.subject}</span>
-                      <span className="mt-0.5 block text-[8px] text-slate-600">{lesson.startTime}–{lesson.endTime}{lesson.classroom ? ` · Sala: ${lesson.classroom}` : ""}</span>
-                    </span>
-                    {lesson.classroom && <span className={`shrink-0 rounded-lg border px-1.5 py-1 text-[8px] font-semibold ${active ? "border-emerald-200/25 bg-emerald-200/10 text-emerald-100" : "border-white/[.06] bg-white/[.03] text-slate-400"}`}>Sala: {lesson.classroom}</span>}
-                    {active && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-200" />}
-                  </div>
-                );
-                })}
-              </motion.div>
-              ) : <div className="grid h-full place-items-center rounded-xl border border-dashed border-slate-800/80 px-4 text-center text-[11px] text-slate-500">{isoWeekday(viewedDate) > 5 ? "Weekend bez lekcji · czas na odpoczynek 🌿" : viewingToday ? "Dziś nie ma zaplanowanych lekcji." : `Brak lekcji w planie na ${scheduleLabel}.`}</div>}
-            </div>
-            <div className="mt-2 flex shrink-0 items-center justify-between border-t border-white/[.05] pt-2 text-[9px] text-slate-600"><span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-emerald-200" /> Trwająca lekcja</span><Link href="/admin" className="flex items-center gap-1 text-slate-500 transition hover:text-emerald-100">Edytuj plan <ArrowRight size={11} /></Link></div>
-          </GlassCard>
-
-          <GlassCard
-            delay={0.14}
-            className="work-card hd-glow-mint"
-            onTouchStart={(event) => { workTouchX.current = event.touches[0].clientX; }}
-            onTouchEnd={(event) => {
-              if (workTouchX.current === null) return;
-              const dx = event.changedTouches[0].clientX - workTouchX.current;
-              workTouchX.current = null;
-              if (Math.abs(dx) < 48) return;
-              stepScheduleDay(dx < 0 ? 1 : -1);
-            }}
-          >
-            <div className="mb-1 flex shrink-0 items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2"><span className="grid h-7 w-7 place-items-center rounded-[10px] bg-emerald-300/[.08] text-emerald-200"><Activity size={15} /></span><span className="hd-overline">Godziny pracy</span></div>
-                <motion.div key={dateKey(viewedDate)} initial={{ opacity: 0, x: slideDir === 0 ? 0 : 12 * slideDir }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2, ease: "easeOut" }} className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                  <span className="text-[clamp(1.8rem,3vw,2.5rem)] font-light leading-none tracking-[-.075em] text-slate-50">{formatHours(viewedDayHours)}<span className="ml-1 text-sm text-slate-400">h</span></span>
-                  <span className="text-[9px] text-slate-500">{workDayLabel}{viewedDayLogs.length > 0 && ` · ${entriesLabel}`}</span>
-                  {!viewingToday && <button onClick={resetScheduleDay} className="hd-button rounded-full border border-emerald-200/20 bg-emerald-200/[.07] px-2 py-0.5 text-[8px] font-semibold text-emerald-100 transition hover:bg-emerald-200/[.14]">Dziś</button>}
-                  {viewedDayHours > 0 && <span className="flex items-center gap-0.5 text-[9px] font-medium text-emerald-200"><Check size={11} /> zapisano</span>}
-                </motion.div>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <button onClick={() => stepScheduleDay(-1)} aria-label="Poprzedni dzień godzin pracy" title="Poprzedni dzień" className="hd-button rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-emerald-100"><ChevronLeft size={15} /></button>
-                <button onClick={() => stepScheduleDay(1)} aria-label="Następny dzień godzin pracy" title="Następny dzień" className="hd-button rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-emerald-100"><ChevronRight size={15} /></button>
-                <button onClick={() => setComposer("work")} className="hd-button flex items-center gap-1.5 rounded-xl border border-emerald-200/15 bg-emerald-200/[.07] px-2.5 py-2 text-[9px] font-semibold text-emerald-100 hover:bg-emerald-200/[.13] sm:px-3"><Plus size={13} /> Dodaj wpis</button>
-              </div>
-            </div>
-            <div className="mb-1 flex shrink-0 items-center justify-between"><p className="text-[9px] text-slate-500">TYDZIEŃ · {formatHours(weekHours)} h <span className="mx-1 text-slate-700">/</span> 40 h</p><Link href="/admin" className="text-[9px] text-slate-600 hover:text-slate-300">rejestr →</Link></div>
-            <WeekChart workLogs={dashboard.workLogs} now={currentTime} />
-          </GlassCard>
+        <div className="dashboard-side center-stack" style={stackRowStyle("center")}>
+          {renderStack("center")}
         </div>
-
-        <div className="dashboard-side right-stack">
-          <GlassCard delay={0.12} className="tasks-card">
-            <SectionHeading icon={CheckCircle2} label="Zadania rodziny" accent="text-amber-200" action={<button onClick={() => setComposer("task")} className="hd-button grid h-7 w-7 place-items-center rounded-lg border border-slate-700/60 bg-white/[.025] text-slate-400 hover:border-emerald-200/25 hover:text-emerald-100" title="Dodaj zadanie"><Plus size={14} /></button>} />
-            <div className="mb-2 flex shrink-0 items-center justify-between text-[9px] text-slate-500"><span>{openTasks.length} otwarte <span className="mx-1 text-slate-700">·</span> {dashboard.tasks.filter((task) => task.isCompleted).length} ukończone</span><span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-amber-200" /> domowa lista</span></div>
-            <div className="hd-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5">
-              {!dataReady ? <p className="py-3 text-center text-[10px] text-slate-600">Ładuję zadania…</p> : dashboard.tasks.slice(0, 6).map((task) => (
-                <div key={task.id} className={`group flex min-h-[34px] items-center gap-2 rounded-xl px-1.5 py-1 transition hover:bg-white/[.025] ${task.isCompleted ? "opacity-50" : ""}`}>
-                  <button onClick={() => void toggleTask(task)} aria-label={task.isCompleted ? "Oznacz jako niewykonane" : "Oznacz jako wykonane"} className={`grid h-[17px] w-[17px] shrink-0 place-items-center rounded-[6px] border transition ${task.isCompleted ? "border-emerald-200/50 bg-emerald-200/20 text-emerald-100" : "border-slate-600 text-transparent hover:border-emerald-200/60"}`}>{task.isCompleted && <Check size={11} />}</button>
-                  <div className="min-w-0 flex-1">
-                    <p className={`truncate text-[10px] font-medium ${task.isCompleted ? "text-slate-500 line-through" : "text-slate-300"}`}>{task.title}</p>
-                    <p className="mt-0.5 truncate text-[8px] text-slate-600">{task.assignedTo || "Wszyscy"}{task.dueDate && ` · ${daysUntil(task.dueDate, currentTime) === 0 ? "dzisiaj" : new Date(task.dueDate).toLocaleDateString("pl-PL", { day: "numeric", month: "short" })}`}</p>
-                  </div>
-                  <button onClick={() => void removeTask(task)} aria-label={`Usuń zadanie ${task.title}`} className="rounded-md p-1 text-slate-700 opacity-0 transition hover:bg-rose-400/10 hover:text-rose-200 group-hover:opacity-100 focus:opacity-100"><X size={12} /></button>
-                </div>
-              ))}
-              {dataReady && dashboard.tasks.length === 0 && <p className="py-4 text-center text-[10px] text-slate-600">Wszystko zrobione. Czas na herbatę ☕</p>}
-            </div>
-            <button onClick={() => setComposer("task")} className="mt-2 flex shrink-0 items-center gap-1.5 border-t border-white/[.05] pt-2 text-[9px] font-medium text-slate-500 transition hover:text-amber-100"><Plus size={12} /> Dodaj do listy <span className="ml-auto text-slate-700">szybki wpis</span></button>
-          </GlassCard>
-
-          <GlassCard delay={0.18} className="notes-card">
-            <SectionHeading icon={NotebookPen} label="Przypięte notatki" accent="text-amber-200" action={<button onClick={() => setComposer("note")} className="hd-button grid h-7 w-7 place-items-center rounded-lg border border-slate-700/60 bg-white/[.025] text-slate-400 hover:border-amber-200/25 hover:text-amber-100" title="Dodaj notatkę"><Plus size={14} /></button>} />
-            <div className="hd-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-0.5">
-              {recentNotes.map((note) => {
-                const colors: Record<string, string> = {
-                  amber: "border-amber-200/10 bg-amber-200/[.055]",
-                  violet: "border-violet-200/10 bg-violet-200/[.055]",
-                  mint: "border-emerald-200/10 bg-emerald-200/[.055]",
-                  sky: "border-sky-200/10 bg-sky-200/[.055]",
-                  rose: "border-rose-200/10 bg-rose-200/[.055]",
-                };
-                return (
-                  <div key={note.id} className={`group relative rounded-xl border px-2.5 py-2 ${colors[note.color] || colors.amber}`}>
-                    <div className="flex items-center gap-1.5 pr-10"><span className="truncate text-[9px] font-semibold text-slate-200">{note.title || "Notatka"}</span><span className="ml-auto shrink-0 text-[8px] text-slate-600">{new Date(note.createdAt).toLocaleDateString("pl-PL", { day: "numeric", month: "short" })}</span></div>
-                    <p className="mt-1 line-clamp-2 text-[9px] leading-[1.45] text-slate-400">{note.content}</p>
-                    <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
-                      <button onClick={() => void toggleNotePin(note)} className="rounded-md p-1 text-slate-500 hover:bg-white/10 hover:text-amber-100" title={note.isPinned ? "Odepnij" : "Przypnij"}><Pin size={10} /></button>
-                      <button onClick={() => void removeNote(note)} className="rounded-md p-1 text-slate-500 hover:bg-rose-300/10 hover:text-rose-200" title="Usuń notatkę"><X size={10} /></button>
-                    </div>
-                  </div>
-                );
-              })}
-              {dataReady && recentNotes.length === 0 && <div className="grid h-full min-h-[58px] place-items-center text-[10px] text-slate-600">Pusto — przypnij ważną myśl.</div>}
-            </div>
-            <button onClick={() => setComposer("note")} className="mt-2 flex shrink-0 items-center gap-1.5 border-t border-white/[.05] pt-2 text-[9px] font-medium text-slate-500 transition hover:text-amber-100"><Plus size={12} /> Zostaw wiadomość rodzinie</button>
-          </GlassCard>
-
-          <GlassCard delay={0.22} className="documents-card hd-glow-coral">
-            <SectionHeading icon={FileText} label="Ważne dokumenty" accent="text-rose-200" action={<Link href="/admin" className="rounded-lg p-1 text-slate-600 hover:bg-white/5 hover:text-slate-300" title="Zarządzaj dokumentami"><ArrowRight size={13} /></Link>} />
-            <div className="mb-1 flex shrink-0 items-center gap-1.5 text-[9px] text-slate-600"><ShieldAlert size={11} className="text-rose-200/70" /> Alert ważności · najbliższe terminy</div>
-            <div className="hd-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5">
-              {!dataReady ? <p className="py-3 text-center text-[10px] text-slate-600">Sprawdzam terminy…</p> : urgentDocuments.map((document) => {
-                const days = daysUntil(document.expirationDate, currentTime);
-                const urgent = days <= 30;
-                return (
-                  <div key={document.id} className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${urgent ? "border border-rose-300/10 bg-rose-300/[.045]" : "bg-white/[.02]"}`}>
-                    <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-[9px] ${urgent ? "bg-rose-300/10 text-rose-200" : "bg-white/[.04] text-slate-400"}`}><FileText size={13} /></span>
-                    <span className="min-w-0 flex-1"><span className="block truncate text-[9px] font-medium text-slate-300">{document.title}</span><span className="mt-0.5 block truncate text-[8px] text-slate-600">{document.category} <span className="mx-1">·</span> {new Date(document.expirationDate).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "numeric" })}</span></span>
-                    <span className={`shrink-0 text-[9px] font-semibold ${urgent ? "text-rose-200" : "text-slate-500"}`}>{days < 0 ? "po terminie" : days === 0 ? "dziś" : `${days} dni`}</span>
-                  </div>
-                );
-              })}
-              {dataReady && urgentDocuments.length === 0 && <p className="py-3 text-center text-[10px] text-slate-600">Brak zapisanych terminów.</p>}
-            </div>
-          </GlassCard>
-
-          <GlassCard delay={0.26} className="assistant-card border-emerald-200/[.09] bg-[linear-gradient(135deg,rgba(19,38,36,.72),rgba(14,20,32,.84))]">
-            <button onClick={() => setAssistantOpen(true)} className="group flex min-h-0 flex-1 items-center gap-3 text-left">
-              <span className={`relative grid h-10 w-10 shrink-0 place-items-center rounded-[14px] border border-emerald-200/10 bg-emerald-200/[.08] text-emerald-100 ${wakeListening ? "status-breathe" : ""}`}><Sparkles size={18} strokeWidth={1.5} /><span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#14201f] bg-emerald-300" /></span>
-              <span className="min-w-0 flex-1"><span className="block text-[9px] font-bold tracking-[.12em] text-emerald-100">ASYSTENT DOMOWY</span><span className="mt-1 block truncate text-[9px] text-slate-500">{wakeListening ? `Nasłuchuję „${wakeWord}”` : voiceStatus}</span></span>
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-emerald-200/10 bg-emerald-200/[.055] text-emerald-100 transition group-hover:bg-emerald-200/[.11]"><MessageCircle size={15} /></span>
-            </button>
-            <p className="mt-2 shrink-0 border-t border-white/[.055] pt-2 text-[8px] text-slate-600">Powiedz <b className="font-medium text-slate-400">„{wakeWord}”</b>, aby rozpocząć.</p>
-          </GlassCard>
+        <div className="dashboard-side right-stack" style={stackRowStyle("right")}>
+          {renderStack("right")}
         </div>
       </div>
 
@@ -1146,6 +1287,16 @@ export default function HomeDashboard() {
 
       <AnimatePresence>
         {toast && <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }} className="fixed bottom-5 left-1/2 z-[90] -translate-x-1/2 rounded-xl border border-slate-700/80 bg-slate-900/95 px-4 py-2.5 text-center text-[11px] text-slate-100 shadow-xl backdrop-blur-xl" role="status">{toast}</motion.div>}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {arranging && (
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }} className="fixed bottom-5 left-1/2 z-[95] flex -translate-x-1/2 items-center gap-2 rounded-2xl border border-violet-300/20 bg-slate-950/95 px-3 py-2 shadow-xl backdrop-blur-xl">
+            <span className="hidden text-[10px] font-medium text-violet-100/90 sm:inline">Tryb układania · strzałki na kaflu</span>
+            <button onClick={resetTileOrder} className="hd-button flex items-center gap-1.5 rounded-xl border border-slate-700 px-3 py-2 text-[10px] font-semibold text-slate-300 hover:bg-white/5"><RotateCcw size={12} /> Reset</button>
+            <button onClick={() => setArranging(false)} className="hd-button flex items-center gap-1.5 rounded-xl border border-violet-300/25 bg-violet-300/10 px-3 py-2 text-[10px] font-semibold text-violet-100 hover:bg-violet-300/15"><Check size={12} /> Gotowe</button>
+          </motion.div>
+        )}
       </AnimatePresence>
 
       <AnimatePresence>
