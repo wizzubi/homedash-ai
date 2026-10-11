@@ -8,6 +8,8 @@ import {
   CalendarDays,
   Check,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Cloud,
   CloudDrizzle,
@@ -303,6 +305,10 @@ export default function HomeDashboard() {
   const [composer, setComposer] = useState<ComposerKind | null>(null);
   const [composerBusy, setComposerBusy] = useState(false);
   const [selectedChild, setSelectedChild] = useState("");
+  // Przeglądanie planu lekcji na inne dni (strzałki / swipe): 0 = dziś.
+  const [dayOffset, setDayOffset] = useState(0);
+  const [slideDir, setSlideDir] = useState(0);
+  const touchX = useRef<number | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantText, setAssistantText] = useState("");
@@ -707,11 +713,37 @@ export default function HomeDashboard() {
     return [...new Set([...fromFamily, ...fromLessons])];
   }, [family, dashboard.timetable]);
   const activeChild = children.includes(selectedChild) ? selectedChild : children[0] ?? "";
-  const todayLessons = dashboard.timetable
-    .filter((lesson) => lesson.childName === activeChild && lesson.dayOfWeek === isoWeekday(currentTime))
+  const viewingToday = dayOffset === 0;
+  const viewedDate = useMemo(() => {
+    const date = new Date(now ?? new Date());
+    date.setDate(date.getDate() + dayOffset);
+    return date;
+  }, [now, dayOffset]);
+  const scheduleLabel = dayOffset === 0
+    ? "dziś"
+    : dayOffset === 1
+      ? "jutro"
+      : dayOffset === -1
+        ? "wczoraj"
+        : viewedDate.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "numeric" });
+  const stepScheduleDay = useCallback((delta: number) => {
+    setSlideDir(delta > 0 ? 1 : -1);
+    setDayOffset((previous) => Math.max(-30, Math.min(30, previous + delta)));
+  }, []);
+  const resetScheduleDay = useCallback(() => {
+    setSlideDir(0);
+    setDayOffset(0);
+  }, []);
+  const viewedLessons = dashboard.timetable
+    .filter((lesson) => lesson.childName === activeChild && lesson.dayOfWeek === isoWeekday(viewedDate))
     .sort((a, b) => a.startTime.localeCompare(b.startTime));
-  const currentLesson = todayLessons.find((lesson) => minutesOfDay(lesson.startTime) <= currentTime.getHours() * 60 + currentTime.getMinutes() && minutesOfDay(lesson.endTime) > currentTime.getHours() * 60 + currentTime.getMinutes());
-  const nextLesson = todayLessons.find((lesson) => minutesOfDay(lesson.startTime) > currentTime.getHours() * 60 + currentTime.getMinutes());
+  const nowMinutes = currentTime.getHours() * 60 + currentTime.getMinutes();
+  const currentLesson = viewingToday
+    ? viewedLessons.find((lesson) => minutesOfDay(lesson.startTime) <= nowMinutes && minutesOfDay(lesson.endTime) > nowMinutes)
+    : undefined;
+  const nextLesson = viewingToday
+    ? viewedLessons.find((lesson) => minutesOfDay(lesson.startTime) > nowMinutes)
+    : undefined;
   const todayHours = dashboard.workLogs.reduce((sum, log) => sum + (dateKey(log.date) === dateKey(currentTime) ? log.hours : 0), 0);
   const weekStart = localMidnight(currentTime);
   weekStart.setDate(weekStart.getDate() - (isoWeekday(currentTime) - 1));
@@ -920,10 +952,25 @@ export default function HomeDashboard() {
         </div>
 
         <div className="dashboard-side center-stack">
-          <GlassCard delay={0.08} className="school-card">
+          <GlassCard
+            delay={0.08}
+            className="school-card"
+            onTouchStart={(event) => { touchX.current = event.touches[0].clientX; }}
+            onTouchEnd={(event) => {
+              if (touchX.current === null) return;
+              const dx = event.changedTouches[0].clientX - touchX.current;
+              touchX.current = null;
+              if (Math.abs(dx) < 48) return;
+              stepScheduleDay(dx < 0 ? 1 : -1);
+            }}
+          >
             <div className="mb-2 flex shrink-0 items-start justify-between gap-2">
-              <SectionHeading icon={CalendarDays} label="Plan lekcji · dziś" accent="text-violet-300" action={<span className="hidden rounded-full border border-slate-700/70 px-2 py-1 text-[8px] font-semibold uppercase tracking-[.12em] text-slate-500 sm:inline">{dayName(currentTime, true)}</span>} />
-              <Link href="/admin" className="-mt-0.5 rounded-lg p-1.5 text-slate-600 hover:bg-white/5 hover:text-slate-300" title="Edytuj plan lekcji"><Settings2 size={13} /></Link>
+              <SectionHeading icon={CalendarDays} label={`Plan lekcji · ${scheduleLabel}`} accent="text-violet-300" action={<span className="hidden rounded-full border border-slate-700/70 px-2 py-1 text-[8px] font-semibold uppercase tracking-[.12em] text-slate-500 sm:inline">{viewedDate.toLocaleDateString("pl-PL", { weekday: "short", day: "numeric", month: "numeric" })}</span>} />
+              <div className="-mt-0.5 flex shrink-0 items-center gap-1">
+                <button onClick={() => stepScheduleDay(-1)} aria-label="Poprzedni dzień planu" title="Poprzedni dzień" className="hd-button rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-violet-100"><ChevronLeft size={15} /></button>
+                <button onClick={() => stepScheduleDay(1)} aria-label="Następny dzień planu" title="Następny dzień" className="hd-button rounded-lg p-1.5 text-slate-500 transition hover:bg-white/5 hover:text-violet-100"><ChevronRight size={15} /></button>
+                <Link href="/admin" className="rounded-lg p-1.5 text-slate-600 hover:bg-white/5 hover:text-slate-300" title="Edytuj plan lekcji"><Settings2 size={13} /></Link>
+              </div>
             </div>
             <div className="hd-scroll-x mb-2 flex shrink-0 items-center gap-1.5">
               {children.map((child, index) => (
@@ -931,7 +978,7 @@ export default function HomeDashboard() {
                   <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${index % 2 === 0 ? "bg-violet-300" : "bg-sky-300"}`} />{child}
                 </button>
               ))}
-              <span className="ml-auto flex items-center gap-1 text-[9px] text-slate-600"><Clock3 size={11} /> {now ? displayTime(now) : "--:--"}</span>
+              <span className="ml-auto flex items-center gap-1 text-[9px] text-slate-600">{!viewingToday && <button onClick={resetScheduleDay} className="hd-button mr-1 rounded-full border border-violet-300/20 bg-violet-300/[.07] px-2 py-0.5 text-[8px] font-semibold text-violet-100 transition hover:bg-violet-300/[.14]">Dziś</button>}<Clock3 size={11} /> {now ? displayTime(now) : "--:--"}</span>
             </div>
             {(currentLesson || nextLesson) && <div className={`mb-2 flex shrink-0 items-center gap-2 rounded-xl border px-2.5 py-1.5 ${currentLesson ? "border-emerald-300/12 bg-emerald-300/[.045]" : "border-white/[.045] bg-white/[.02]"}`}>
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${currentLesson ? "status-breathe bg-emerald-200" : "bg-slate-500"}`} />
@@ -939,9 +986,11 @@ export default function HomeDashboard() {
               {currentLesson?.classroom && <span className="ml-auto shrink-0 text-[8px] text-slate-500">s. {currentLesson.classroom}</span>}
             </div>}
             <div className="hd-scroll min-h-0 flex-1 space-y-1 overflow-y-auto pr-0.5">
-              {!dataReady ? <div className="grid h-full place-items-center text-[11px] text-slate-600">Ładuję plan dnia…</div> : todayLessons.length ? todayLessons.slice(0, 6).map((lesson) => {
+              {!dataReady ? <div className="grid h-full place-items-center text-[11px] text-slate-600">Ładuję plan dnia…</div> : viewedLessons.length ? (
+              <motion.div key={`${activeChild}-${dateKey(viewedDate)}`} initial={{ opacity: 0, x: slideDir === 0 ? 0 : 22 * slideDir }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.22, ease: "easeOut" }} className="space-y-1">
+                {viewedLessons.slice(0, 8).map((lesson) => {
                 const active = lesson.id === currentLesson?.id;
-                const past = minutesOfDay(lesson.endTime) <= currentTime.getHours() * 60 + currentTime.getMinutes();
+                const past = dayOffset < 0 || (dayOffset === 0 && minutesOfDay(lesson.endTime) <= nowMinutes);
                 return (
                   <div key={lesson.id} className={`flex min-h-[37px] items-center gap-2.5 rounded-xl border px-2.5 py-1.5 transition ${active ? "border-emerald-200/20 bg-emerald-200/[.075] shadow-[0_0_22px_rgba(134,239,172,.035)]" : past ? "border-transparent bg-white/[.012] opacity-50" : "border-transparent bg-white/[.025] hover:border-white/[.055]"}`}>
                     <span className={`w-[72px] shrink-0 font-mono text-[9px] ${active ? "text-emerald-100" : "text-slate-500"}`}>{lesson.startTime}<span className="mx-1 text-slate-700">–</span>{lesson.endTime}</span>
@@ -951,7 +1000,9 @@ export default function HomeDashboard() {
                     {active && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-200" />}
                   </div>
                 );
-              }) : <div className="grid h-full place-items-center rounded-xl border border-dashed border-slate-800/80 px-4 text-center text-[11px] text-slate-500">{isoWeekday(currentTime) > 5 ? "Weekend bez lekcji · czas na odpoczynek 🌿" : "Dziś nie ma zaplanowanych lekcji."}</div>}
+                })}
+              </motion.div>
+              ) : <div className="grid h-full place-items-center rounded-xl border border-dashed border-slate-800/80 px-4 text-center text-[11px] text-slate-500">{isoWeekday(viewedDate) > 5 ? "Weekend bez lekcji · czas na odpoczynek 🌿" : viewingToday ? "Dziś nie ma zaplanowanych lekcji." : `Brak lekcji w planie na ${scheduleLabel}.`}</div>}
             </div>
             <div className="mt-2 flex shrink-0 items-center justify-between border-t border-white/[.05] pt-2 text-[9px] text-slate-600"><span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-emerald-200" /> Trwająca lekcja</span><Link href="/admin" className="flex items-center gap-1 text-slate-500 transition hover:text-emerald-100">Edytuj plan <ArrowRight size={11} /></Link></div>
           </GlassCard>
